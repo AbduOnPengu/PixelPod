@@ -1,45 +1,83 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import App from '../App'
+import { QueueProvider } from '../context/QueueContext'
+import { PreferencesProvider } from '../context/PreferencesContext'
+import { ToastProvider } from '../context/ToastContext'
 
 const mockAuthState = vi.hoisted(() => ({
   isAuthenticated: true,
   isLoading: false,
+  isLoggingIn: false,
+  status: { authenticated: true, hasClientId: true, redirectUri: 'http://127.0.0.1:43821/callback' },
   login: vi.fn(),
+  cancelLogin: vi.fn(),
   logout: vi.fn(),
-  error: null
+  setClientId: vi.fn(),
+  error: null,
+  user: { display_name: 'Pixel Listener', email: 'pixel@example.com' }
 }))
 
 const mockSpotifyState = vi.hoisted(() => ({
   playlists: [],
   currentPlaylistTracks: [],
   likedSongs: [],
-  searchResults: { tracks: [], albums: [], artists: [] },
+  savedAlbums: [],
+  recentlyPlayed: [],
+  topTracks: [],
+  topArtists: [],
+  searchResults: { tracks: [], albums: [], artists: [], playlists: [] },
   selectedPlaylist: null,
-  userProfile: { name: 'Pixel Listener', email: 'pixel@example.com' },
+  selectedAlbum: null,
+  selectedArtist: null,
+  userProfile: { name: 'Pixel Listener', email: 'pixel@example.com', product: 'premium' },
   isLoading: false,
+  isHomeLoading: false,
   error: null,
   fetchPlaylists: vi.fn(),
+  fetchPlaylistTracks: vi.fn(),
   fetchLikedSongs: vi.fn(),
+  fetchSavedAlbums: vi.fn(),
+  fetchRecentlyPlayed: vi.fn(),
+  fetchHomeDiscovery: vi.fn(),
   selectPlaylist: vi.fn(),
+  openAlbum: vi.fn(),
+  openArtist: vi.fn(),
   searchAll: vi.fn(),
-  fetchUserProfile: vi.fn()
+  clearSearch: vi.fn(),
+  fetchUserProfile: vi.fn(),
+  resetLibrary: vi.fn()
 }))
 
 const mockPlaybackState = vi.hoisted(() => ({
   isReady: true,
   isPlaying: false,
   isLoading: false,
-  currentProgress: 6000,
-  duration: 201000,
-  volume: 50,
+  currentProgress: 12000,
+  duration: 210000,
+  volume: 65,
   shuffleEnabled: false,
   repeatMode: 'off',
+  playbackMode: 'sdk',
+  sdkDeviceId: 'sdk-device-1',
+  deviceId: 'sdk-device-1',
+  activeDeviceName: 'PixelPod (This Computer)',
+  devices: [],
+  remoteQueue: [],
+  currentTrack: null,
   play: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
   togglePlayPause: vi.fn(),
+  next: vi.fn(),
+  previous: vi.fn(),
   seek: vi.fn(),
   toggleShuffle: vi.fn(),
   cycleRepeatMode: vi.fn(),
   setVolume: vi.fn(),
+  selectDevice: vi.fn(),
+  refreshDevices: vi.fn(),
+  refreshRemoteQueue: vi.fn(),
+  addToQueue: vi.fn(),
   error: null
 }))
 
@@ -62,160 +100,107 @@ vi.mock('../utils/sounds', () => ({
   initAudio: vi.fn()
 }))
 
-function advanceToSettledScreen(ms = 2400) {
-  act(() => {
-    vi.advanceTimersByTime(ms)
-  })
+function renderDesktopApp() {
+  return render(
+    <PreferencesProvider>
+      <ToastProvider>
+        <QueueProvider>
+          <App />
+        </QueueProvider>
+      </ToastProvider>
+    </PreferencesProvider>
+  )
 }
 
-async function clickControl(name) {
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name }))
-    await Promise.resolve()
-  })
-}
+describe('Desktop App integration', () => {
+  const samplePlaylist = {
+    id: 'playlist-1',
+    uri: 'spotify:playlist:playlist-1',
+    name: 'Midnight Drive',
+    description: 'Late-night synthwave',
+    trackCount: 1,
+    image: null,
+    owner: 'Pixel Listener'
+  }
 
-function pressKey(key) {
-  act(() => {
-    fireEvent.keyDown(window, { key })
-  })
-}
+  const sampleTrack = {
+    id: 'track-1',
+    uri: 'spotify:track:track-1',
+    title: 'Nightcall',
+    artist: 'Kavinsky',
+    album: 'OutRun',
+    albumArt: null,
+    albumArtSmall: null,
+    duration: 258000
+  }
 
-describe('App integration', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-
-    const playlist = {
-      id: 'playlist-1',
-      uri: 'spotify:playlist:playlist-1',
-      name: 'Favorites',
-      trackCount: 2,
-      image: null,
-      owner: 'Pixel Listener'
-    }
-
-    const track = {
-      id: 'track-1',
-      uri: 'spotify:track:track-1',
-      title: 'Clarity',
-      artist: 'Zedd, Foxes',
-      album: 'Clarity',
-      albumArt: null,
-      albumArtSmall: null
-    }
-
     Object.assign(mockAuthState, {
       isAuthenticated: true,
       isLoading: false,
+      isLoggingIn: false,
       login: vi.fn(),
       logout: vi.fn(),
+      setClientId: vi.fn(),
       error: null
     })
 
     Object.assign(mockSpotifyState, {
-      playlists: [playlist],
-      currentPlaylistTracks: [track],
-      likedSongs: [track],
-      searchResults: { tracks: [], albums: [], artists: [] },
+      playlists: [samplePlaylist],
+      currentPlaylistTracks: [sampleTrack],
+      likedSongs: [sampleTrack],
+      recentlyPlayed: [sampleTrack],
+      topTracks: [],
+      topArtists: [],
       selectedPlaylist: null,
-      userProfile: { name: 'Pixel Listener', email: 'pixel@example.com' },
-      isLoading: false,
-      error: null,
       fetchPlaylists: vi.fn(),
       fetchLikedSongs: vi.fn(),
-      selectPlaylist: vi.fn(async (selectedPlaylist) => {
-        mockSpotifyState.selectedPlaylist = selectedPlaylist
+      fetchHomeDiscovery: vi.fn(),
+      fetchUserProfile: vi.fn(),
+      selectPlaylist: vi.fn(async (pl) => {
+        mockSpotifyState.selectedPlaylist = pl
         return mockSpotifyState.currentPlaylistTracks
-      }),
-      searchAll: vi.fn(),
-      fetchUserProfile: vi.fn()
+      })
     })
 
     Object.assign(mockPlaybackState, {
       isReady: true,
       isPlaying: false,
-      isLoading: false,
-      currentProgress: 6000,
-      duration: 201000,
-      volume: 50,
-      shuffleEnabled: false,
-      repeatMode: 'off',
+      currentTrack: null,
       play: vi.fn(),
-      togglePlayPause: vi.fn(),
-      seek: vi.fn(),
-      toggleShuffle: vi.fn(),
-      cycleRepeatMode: vi.fn(),
-      setVolume: vi.fn(),
-      error: null
+      togglePlayPause: vi.fn()
     })
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
-  })
+  it('hydrates library on mount and navigates across Sidebar pages with Back/Forward support', async () => {
+    renderDesktopApp()
 
-  it('supports keyboard navigation into Settings and back out to the main menu', () => {
-    render(<App />)
-
-    advanceToSettledScreen()
-    pressKey('ArrowDown')
-    pressKey('ArrowDown')
-    pressKey('Enter')
-    advanceToSettledScreen(400)
-
-    expect(screen.getByText('Version 1.0.0')).toBeInTheDocument()
-
-    pressKey('Escape')
-    advanceToSettledScreen(400)
-
-    expect(screen.getByText('Music')).toBeInTheDocument()
     expect(mockSpotifyState.fetchUserProfile).toHaveBeenCalled()
+    expect(mockSpotifyState.fetchPlaylists).toHaveBeenCalled()
+    expect(mockSpotifyState.fetchLikedSongs).toHaveBeenCalled()
+    expect(mockSpotifyState.fetchHomeDiscovery).toHaveBeenCalled()
+
+    // Navigate to Your Library
+    fireEvent.click(screen.getByRole('button', { name: /Your Library/i }))
+    expect(screen.getByRole('heading', { name: 'Your Library' })).toBeInTheDocument()
+
+    // Navigate to Settings
+    fireEvent.click(screen.getByRole('button', { name: /Settings/i }))
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+
+    // Use TitleBar Back button
+    fireEvent.click(screen.getByRole('button', { name: 'Navigate back' }))
+    expect(screen.getByRole('heading', { name: 'Your Library' })).toBeInTheDocument()
   })
 
-  it('navigates from playlists into Now Playing and starts playback with playlist context', async () => {
-    render(<App />)
+  it('plays a track from Home and synchronizes the persistent bottom PlayerBar', async () => {
+    renderDesktopApp()
 
-    advanceToSettledScreen()
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
+    const trackRow = screen.getByRole('row', { name: /Nightcall by Kavinsky/i })
+    await act(async () => {
+      fireEvent.click(trackRow)
+    })
 
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    mockSpotifyState.selectedPlaylist = mockSpotifyState.playlists[0]
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    expect(mockSpotifyState.selectPlaylist).toHaveBeenCalledWith(mockSpotifyState.playlists[0])
-    expect(mockPlaybackState.play).toHaveBeenCalledWith(
-      'spotify:track:track-1',
-      'spotify:playlist:playlist-1',
-      0
-    )
-    expect(screen.getByText('Now Playing')).toBeInTheDocument()
-    expect(screen.getByText('Progress')).toBeInTheDocument()
-  })
-
-  it('toggles liked songs shuffle locally without restarting the current song', async () => {
-    mockPlaybackState.isPlaying = true
-
-    render(<App />)
-
-    advanceToSettledScreen()
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    pressKey('ArrowDown')
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
-
-    expect(mockPlaybackState.play).toHaveBeenCalledTimes(1)
     expect(mockPlaybackState.play).toHaveBeenCalledWith(
       'spotify:track:track-1',
       null,
@@ -223,62 +208,40 @@ describe('App integration', () => {
       ['spotify:track:track-1']
     )
 
-    await clickControl('Shuffle off')
-
-    expect(mockPlaybackState.toggleShuffle).toHaveBeenCalledWith({
-      syncRemote: false,
-      forceState: true
-    })
-    expect(mockPlaybackState.play).toHaveBeenCalledTimes(2)
-    expect(mockPlaybackState.play).toHaveBeenLastCalledWith(
-      'spotify:track:track-1',
-      null,
-      0,
-      ['spotify:track:track-1'],
-      6000
-    )
-
-    await clickControl('Shuffle on')
-
-    expect(mockPlaybackState.toggleShuffle).toHaveBeenLastCalledWith({
-      syncRemote: false,
-      forceState: false
-    })
-    expect(mockPlaybackState.play).toHaveBeenCalledTimes(3)
-    expect(mockPlaybackState.play).toHaveBeenLastCalledWith(
-      'spotify:track:track-1',
-      null,
-      0,
-      ['spotify:track:track-1'],
-      6000
-    )
+    // Persistent bottom player shows the selected track
+    expect(screen.getByRole('button', { name: 'Nightcall' })).toBeInTheDocument()
   })
 
-  it('turns off remote shuffle before starting liked songs queue playback', async () => {
-    mockPlaybackState.shuffleEnabled = true
+  it('switches into Classic iPod Mode and preserves shared playback state', async () => {
+    mockPlaybackState.currentTrack = sampleTrack
+    renderDesktopApp()
 
-    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Classic iPod' }))
 
-    advanceToSettledScreen()
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
+    // Classic iPod rotary SELECT button is mounted inside the desktop shell
+    expect(screen.getByRole('button', { name: 'SELECT' })).toBeInTheDocument()
 
-    pressKey('ArrowDown')
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
+    // Return to Desktop View
+    fireEvent.click(screen.getByRole('button', { name: /Desktop View/i }))
+    expect(screen.getByRole('button', { name: 'Launch Classic iPod' })).toBeInTheDocument()
+  })
 
-    await clickControl('SELECT')
-    advanceToSettledScreen(400)
+  it('renders the PKCE onboarding screen with Client ID validation when signed out', async () => {
+    mockAuthState.isAuthenticated = false
+    mockAuthState.status = {
+      authenticated: false,
+      hasClientId: false,
+      redirectUri: 'http://127.0.0.1:43821/callback'
+    }
 
-    expect(mockPlaybackState.toggleShuffle).toHaveBeenCalledWith({
-      syncRemote: true,
-      forceState: false
-    })
-    expect(mockPlaybackState.play).toHaveBeenCalledWith(
-      'spotify:track:track-1',
-      null,
-      0,
-      ['spotify:track:track-1']
-    )
+    renderDesktopApp()
+
+    expect(screen.getByRole('heading', { name: 'Welcome to PixelPod' })).toBeInTheDocument()
+    expect(screen.getByText('http://127.0.0.1:43821/callback')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Connect with Spotify/i }))
+    expect(
+      screen.getByText(/Enter a valid 32-character hexadecimal Spotify Client ID/i)
+    ).toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 import {
   fetchAllPlaylists,
+  fetchRecentlyPlayedTracks,
   fetchSpotifyUserProfile,
   searchSpotifyCatalog
 } from '../spotifyService'
@@ -8,6 +9,13 @@ const mockSpotifyApi = vi.hoisted(() => ({
   getUserPlaylists: vi.fn(),
   getPlaylistTracks: vi.fn(),
   getSavedTracks: vi.fn(),
+  getSavedAlbums: vi.fn(),
+  getRecentlyPlayed: vi.fn(),
+  getTopTracks: vi.fn(),
+  getTopArtists: vi.fn(),
+  getAlbum: vi.fn(),
+  getArtist: vi.fn(),
+  getArtistTopTracks: vi.fn(),
   search: vi.fn(),
   getUserProfile: vi.fn(),
   formatTrack: vi.fn(),
@@ -27,6 +35,7 @@ describe('spotifyService', () => {
 
     mockSpotifyApi.formatTrack.mockImplementation((track) => ({
       id: track.id,
+      uri: track.uri || `spotify:track:${track.id}`,
       title: track.name
     }))
 
@@ -68,7 +77,7 @@ describe('spotifyService', () => {
     expect(mockSpotifyApi.getUserPlaylists).toHaveBeenNthCalledWith(2, 50, 50)
   })
 
-  it('maps search results into track, album, and artist buckets', async () => {
+  it('maps search results into track, album, artist, and playlist buckets', async () => {
     mockSpotifyApi.search.mockResolvedValue({
       tracks: {
         items: [{ id: 'track-1', name: 'Track One' }]
@@ -78,16 +87,39 @@ describe('spotifyService', () => {
       },
       artists: {
         items: [{ id: 'artist-1', name: 'Artist One' }]
+      },
+      playlists: {
+        items: [{ id: 'playlist-1', name: 'Playlist One' }]
       }
     })
 
     await expect(searchSpotifyCatalog('clarity')).resolves.toEqual({
-      tracks: [{ id: 'track-1', title: 'Track One' }],
+      tracks: [{ id: 'track-1', uri: 'spotify:track:track-1', title: 'Track One' }],
       albums: [{ id: 'album-1', title: 'Album One' }],
-      artists: [{ id: 'artist-1', name: 'Artist One' }]
+      artists: [{ id: 'artist-1', name: 'Artist One' }],
+      playlists: [{ id: 'playlist-1', name: 'Playlist One' }]
     })
 
-    expect(mockSpotifyApi.search).toHaveBeenCalledWith('clarity', ['track', 'album', 'artist'])
+    expect(mockSpotifyApi.search).toHaveBeenCalledWith('clarity', [
+      'track',
+      'album',
+      'artist',
+      'playlist'
+    ])
+  })
+
+  it('deduplicates recently played tracks by URI while preserving order', async () => {
+    mockSpotifyApi.getRecentlyPlayed.mockResolvedValue({
+      items: [
+        { id: '1', uri: 'spotify:track:1', name: 'First' },
+        { id: '1', uri: 'spotify:track:1', name: 'First' },
+        { id: '2', uri: 'spotify:track:2', name: 'Second' }
+      ]
+    })
+
+    const recent = await fetchRecentlyPlayedTracks(10)
+    expect(recent).toHaveLength(2)
+    expect(recent.map((t) => t.title)).toEqual(['First', 'Second'])
   })
 
   it('normalizes the Spotify user profile fields used by the app', async () => {

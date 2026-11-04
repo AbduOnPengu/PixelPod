@@ -41,9 +41,9 @@ function IPod({
   theme,
   skin,
   onThemeChange,
-  onSkinChange
+  onSkinChange,
+  soundsEnabled = true
 }) {
-  // Initialize audio on first user interaction
   useEffect(() => {
     const handleFirstInteraction = () => {
       initAudio()
@@ -60,9 +60,10 @@ function IPod({
     }
   }, [])
 
-  // HOF that wraps a handler with a sound effect
   const withSound = (soundFn, handler) => () => {
-    soundFn()
+    if (soundsEnabled) {
+      soundFn()
+    }
     handler()
   }
 

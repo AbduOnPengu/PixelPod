@@ -1,33 +1,45 @@
-import { clearTokens, getStoredTokens, getValidToken, tokenHasScopes } from './spotifyAuth'
+import { clearTokens, getTokenInfo, getValidToken, tokenHasScopes } from './spotifyAuth'
 import { logger } from './logger'
 
 const SPOTIFY_API = 'https://api.spotify.com/v1'
 
 async function fetchWithAuth(endpoint, options = {}) {
-  const storedTokens = getStoredTokens()
+  const tokenInfo = await getTokenInfo()
 
   if (
+    tokenInfo?.scope &&
     (endpoint.startsWith('/me/playlists') || endpoint.startsWith('/playlists/')) &&
-    !tokenHasScopes(storedTokens, ['playlist-read-private'])
+    !tokenHasScopes(tokenInfo.scope, ['playlist-read-private'])
   ) {
-    clearTokens()
-    throw new Error('Spotify playlist permission is missing - restart the server, then connect Spotify again')
+    await clearTokens()
+    throw new Error('Spotify playlist permission is missing - reconnect Spotify and try again')
   }
 
-  const token = await getValidToken()
+  const token = tokenInfo?.accessToken || (await getValidToken())
 
   if (!token) {
     throw new Error('Not authenticated - please log in again')
   }
 
-  const response = await fetch(`${SPOTIFY_API}${endpoint}`, {
-    ...options,
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...options.headers
+  const send = (bearer) =>
+    fetch(`${SPOTIFY_API}${endpoint}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    })
+
+  let response = await send(token)
+
+  // Retry once with a forced refresh if the access token expired mid-flight.
+  if (response.status === 401) {
+    const refreshed = await getValidToken({ forceRefresh: true })
+    if (refreshed && refreshed !== token) {
+      response = await send(refreshed)
     }
-  })
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}))
@@ -36,10 +48,10 @@ async function fetchWithAuth(endpoint, options = {}) {
     const authenticateHeader = response.headers.get('www-authenticate') || ''
     const missingScopeMatch = authenticateHeader.match(/scope="([^"]+)"/i)
     const requiredScope = missingScopeMatch?.[1] || ''
-    const isPlaylistScopeFailure = response.status === 403 && (
-      endpoint.startsWith('/playlists/') ||
-      endpoint.startsWith('/me/playlists')
-    )
+    const isPlaylistScopeFailure =
+      response.status === 403 &&
+      (endpoint.startsWith('/playlists/') || endpoint.startsWith('/me/playlists'))
+
     logger.error('Spotify API error:', {
       endpoint,
       status: response.status,
@@ -48,19 +60,18 @@ async function fetchWithAuth(endpoint, options = {}) {
       authenticateHeader
     })
 
-    // Handle specific error cases
     if (response.status === 401) {
-      clearTokens()
+      await clearTokens()
       throw new Error('Spotify session expired - connect Spotify again')
     }
     if (response.status === 403) {
       if (requiredScope) {
-        clearTokens()
-        throw new Error(`Spotify scope "${requiredScope}" is missing - restart the server, then connect Spotify again`)
+        await clearTokens()
+        throw new Error(`Spotify scope "${requiredScope}" is missing - reconnect Spotify and try again`)
       }
 
       if (normalizedMessage.includes('scope') || isPlaylistScopeFailure) {
-        clearTokens()
+        await clearTokens()
         throw new Error('Spotify permissions changed - connect Spotify again')
       }
 
@@ -70,6 +81,7 @@ async function fetchWithAuth(endpoint, options = {}) {
     throw new Error(spotifyMessage || `API error: ${response.status}`)
   }
 
+  if (response.status === 204) return null
   return response.json()
 }
 
@@ -83,6 +95,11 @@ export async function getUserPlaylists(limit = 50, offset = 0) {
   return fetchWithAuth(`/me/playlists?limit=${limit}&offset=${offset}`)
 }
 
+// Get playlist details
+export async function getPlaylist(playlistId) {
+  return fetchWithAuth(`/playlists/${playlistId}`)
+}
+
 // Get playlist tracks
 export async function getPlaylistTracks(playlistId, limit = 50, offset = 0) {
   return fetchWithAuth(`/playlists/${playlistId}/items?limit=${limit}&offset=${offset}`)
@@ -93,6 +110,11 @@ export async function getSavedTracks(limit = 50, offset = 0) {
   return fetchWithAuth(`/me/tracks?limit=${limit}&offset=${offset}`)
 }
 
+// Get user's saved albums
+export async function getSavedAlbums(limit = 50, offset = 0) {
+  return fetchWithAuth(`/me/albums?limit=${limit}&offset=${offset}`)
+}
+
 // Search for tracks, artists, albums, playlists
 export async function search(query, types = ['track']) {
   const typeString = types.join(',')
@@ -100,13 +122,17 @@ export async function search(query, types = ['track']) {
     q: query,
     type: typeString
   })
-  // Note: limit parameter removed - Spotify search endpoint may not accept it with certain token scopes
   return fetchWithAuth(`/search?${searchParams.toString()}`)
 }
 
 // Get user's top tracks
 export async function getTopTracks(timeRange = 'medium_term', limit = 20) {
   return fetchWithAuth(`/me/top/tracks?time_range=${timeRange}&limit=${limit}`)
+}
+
+// Get user's top artists
+export async function getTopArtists(timeRange = 'medium_term', limit = 12) {
+  return fetchWithAuth(`/me/top/artists?time_range=${timeRange}&limit=${limit}`)
 }
 
 // Get recently played tracks
@@ -119,35 +145,45 @@ export async function getTrack(trackId) {
   return fetchWithAuth(`/tracks/${trackId}`)
 }
 
-// Get album details
+// Get album details (includes tracks)
 export async function getAlbum(albumId) {
   return fetchWithAuth(`/albums/${albumId}`)
 }
 
-// Get artist details
+// Get artist details & top tracks
 export async function getArtist(artistId) {
   return fetchWithAuth(`/artists/${artistId}`)
 }
 
+export async function getArtistTopTracks(artistId) {
+  return fetchWithAuth(`/artists/${artistId}/top-tracks`)
+}
+
 // Format track data for our app
-export function formatTrack(track) {
+export function formatTrack(track, fallbackAlbum = null) {
   if (!track) return null
 
-  // Handle both regular track and saved track format
-  const actualTrack = track.track ?? track
+  // Handle regular track, saved track ({ track }), or playlist item ({ item } / { track })
+  const actualTrack = track.track ?? track.item ?? track
 
   if (!actualTrack?.uri || !actualTrack?.name) {
     return null
   }
 
+  const validFallback =
+    fallbackAlbum && typeof fallbackAlbum === 'object' && !Array.isArray(fallbackAlbum)
+      ? fallbackAlbum
+      : null
+  const albumObj = actualTrack.album || validFallback
+
   return {
     id: actualTrack.id || actualTrack.uri,
     uri: actualTrack.uri,
     title: actualTrack.name,
-    artist: actualTrack.artists?.map(a => a.name).join(', ') || 'Unknown Artist',
-    album: actualTrack.album?.name || 'Unknown Album',
-    albumArt: actualTrack.album?.images?.[0]?.url || null,
-    albumArtSmall: actualTrack.album?.images?.[2]?.url || actualTrack.album?.images?.[0]?.url || null,
+    artist: actualTrack.artists?.map((a) => a.name).join(', ') || 'Unknown Artist',
+    album: albumObj?.name || 'Unknown Album',
+    albumArt: albumObj?.images?.[0]?.url || null,
+    albumArtSmall: albumObj?.images?.[2]?.url || albumObj?.images?.[0]?.url || null,
     duration: actualTrack.duration_ms ?? 0,
     previewUrl: actualTrack.preview_url
   }
@@ -157,17 +193,18 @@ export function formatTrack(track) {
 export function formatPlaylist(playlist) {
   if (!playlist) return null
 
+  const itemsContainer = playlist.tracks ?? playlist.items
   const trackTotal = Number.isFinite(playlist.trackCount)
     ? playlist.trackCount
-    : Number.isFinite(playlist.tracks?.total)
-      ? playlist.tracks.total
-      : Array.isArray(playlist.tracks?.items)
-        ? playlist.tracks.items.length
+    : Number.isFinite(itemsContainer?.total)
+      ? itemsContainer.total
+      : Array.isArray(itemsContainer?.items)
+        ? itemsContainer.items.length
         : undefined
 
   return {
     id: playlist.id,
-    uri: playlist.uri, // Add URI for context playback
+    uri: playlist.uri,
     name: playlist.name,
     description: playlist.description,
     trackCount: trackTotal,
@@ -177,7 +214,8 @@ export function formatPlaylist(playlist) {
 }
 
 // Format album data for our app
-export function formatAlbum(album) {
+export function formatAlbum(albumEntry) {
+  const album = albumEntry?.album ?? albumEntry
   if (!album) return null
 
   return {
@@ -185,7 +223,7 @@ export function formatAlbum(album) {
     uri: album.uri,
     type: 'album',
     title: album.name,
-    artist: album.artists?.map(a => a.name).join(', ') || 'Unknown Artist',
+    artist: album.artists?.map((a) => a.name).join(', ') || 'Unknown Artist',
     image: album.images?.[0]?.url || null,
     imageSmall: album.images?.[2]?.url || album.images?.[0]?.url || null,
     releaseDate: album.release_date,

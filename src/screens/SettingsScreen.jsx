@@ -3,12 +3,13 @@ import './SettingsScreen.css'
 
 function SettingsScreen({ userProfile, onLogout, theme, skin, onThemeChange, onSkinChange }) {
   const displayName = userProfile?.name || 'Spotify Listener'
-  const initials = displayName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join('') || 'PP'
+  const initials =
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join('') || 'PP'
 
   return (
     <div className="settings-screen">
@@ -29,7 +30,9 @@ function SettingsScreen({ userProfile, onLogout, theme, skin, onThemeChange, onS
           <div className="profile-copy">
             <div className="profile-label">Account</div>
             <div className="profile-name">{displayName}</div>
-            <div className="profile-subtitle">{userProfile?.email || 'Signed in with Spotify'}</div>
+            <div className="profile-subtitle">
+              {userProfile?.email || 'Signed in with Spotify'}
+            </div>
           </div>
         </div>
 
@@ -38,7 +41,9 @@ function SettingsScreen({ userProfile, onLogout, theme, skin, onThemeChange, onS
           <div className="appearance-group">
             <div className="appearance-label-row">
               <span className="info-label">Theme</span>
-              <span className="appearance-current">{THEMES.find((option) => option.id === theme)?.label || 'Classic'}</span>
+              <span className="appearance-current">
+                {THEMES.find((option) => option.id === theme)?.label || 'Classic'}
+              </span>
             </div>
             <div className="appearance-options theme-grid">
               {THEMES.map((option) => (
@@ -57,7 +62,9 @@ function SettingsScreen({ userProfile, onLogout, theme, skin, onThemeChange, onS
           <div className="appearance-group">
             <div className="appearance-label-row">
               <span className="info-label">Skin</span>
-              <span className="appearance-current">{SKINS.find((option) => option.id === skin)?.label || 'Silver'}</span>
+              <span className="appearance-current">
+                {SKINS.find((option) => option.id === skin)?.label || 'Silver'}
+              </span>
             </div>
             <div className="appearance-options skins-grid">
               {SKINS.map((option) => (
@@ -94,13 +101,17 @@ function SettingsScreen({ userProfile, onLogout, theme, skin, onThemeChange, onS
         <div className="settings-card">
           <div className="settings-section-title">About PixelPod</div>
           <div className="settings-item">
-            <span className="item-text">Version 1.0.0</span>
+            <span className="item-text">Version 2.0.0</span>
           </div>
           <div className="settings-item">
-            <span className="item-text">Classic iPod-inspired Spotify player with wheel navigation.</span>
+            <span className="item-text">
+              Classic iPod-inspired Spotify player with rotary wheel navigation.
+            </span>
           </div>
           <div className="settings-item">
-            <span className="item-text">Built for browsing playlists, search, and playback in a familiar iPod-style interface.</span>
+            <span className="item-text">
+              Synchronized with the PixelPod Desktop audio &amp; queue engine.
+            </span>
           </div>
         </div>
 

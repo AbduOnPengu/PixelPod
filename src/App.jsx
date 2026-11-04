@@ -1,366 +1,375 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import IPod from '@/components/IPod'
-import { useAuth as useSpotifyAuth } from '@/context/AuthContext'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useAuth } from '@/context/AuthContext'
 import { useSpotify } from '@/context/SpotifyContext'
 import { usePlayback } from '@/context/PlaybackContext'
-import useNavigation from '@/hooks/useNavigation'
-import useQueueManager from '@/hooks/useQueueManager'
-import { logger } from '@/utils/logger'
-import { APPEARANCE_STORAGE_KEY } from '@/constants/appearance'
-import './App.css'
+import { useQueue } from '@/context/QueueContext'
+import { usePreferences } from '@/context/PreferencesContext'
+import { onDesktopEvent } from '@/desktop/bridge'
+import TitleBar from '@/components/shell/TitleBar'
+import Sidebar from '@/components/shell/Sidebar'
+import PlayerBar from '@/components/shell/PlayerBar'
+import QueueDrawer from '@/components/ui/QueueDrawer'
+import ToastViewport from '@/components/ui/ToastViewport'
+import LoginPage from '@/pages/LoginPage'
+import HomePage from '@/pages/HomePage'
+import SearchPage from '@/pages/SearchPage'
+import LibraryPage from '@/pages/LibraryPage'
+import CollectionPage from '@/pages/CollectionPage'
+import NowPlayingPage from '@/pages/NowPlayingPage'
+import SettingsPage from '@/pages/SettingsPage'
+import ClassicModePage from '@/pages/ClassicModePage'
 
-
-function App() {
-  const { isAuthenticated, isLoading: authLoading, login, logout, error: authError } = useSpotifyAuth()
+export default function App() {
+  const { isAuthenticated, isLoading: authLoading, logout } = useAuth()
   const {
     playlists,
-    currentPlaylistTracks,
-    likedSongs,
-    searchResults,
     selectedPlaylist,
     userProfile,
-    isLoading: spotifyLoading,
-    error: spotifyError,
+    fetchUserProfile,
     fetchPlaylists,
     fetchLikedSongs,
+    fetchHomeDiscovery,
     selectPlaylist,
-    searchAll,
-    fetchUserProfile
+    openAlbum,
+    openArtist
   } = useSpotify()
   const {
-    isReady: playbackReady,
-    isPlaying,
-    isLoading: playbackLoading,
-    currentProgress,
-    duration,
-    currentTrack: playbackTrack,
     volume,
-    shuffleEnabled,
-    repeatMode,
-    play,
     togglePlayPause,
-    seek,
-    toggleShuffle,
     cycleRepeatMode,
-    setVolume,
-    error: playbackError
+    setVolume
   } = usePlayback()
-
-  const [theme, setTheme] = useState('classic')
-  const [skin, setSkin] = useState('silver')
-
-  const {
-    currentScreen,
-    setCurrentScreen,
-    selectedIndex,
-    setSelectedIndex,
-    setMenuHistory,
-    transitionDirection,
-    searchMode,
-    setSearchMode,
-    navigateForward,
-    handleBack,
-    handleNext,
-    handlePrevious,
-    getMenuItems,
-    getSearchResults,
-    resetNavigation
-  } = useNavigation({
-    playlists,
-    currentPlaylistTracks,
-    likedSongs,
-    searchResults,
-    spotifyLoading,
-    spotifyError,
-    authError,
-    selectPlaylist
-  })
-
   const {
     currentTrack,
-    setCurrentSourceTracks,
-    queueShuffleEnabled,
-    effectiveShuffleEnabled,
-    getCurrentTracks,
-    createLikedSongsQueue,
-    applyTrackSelection,
+    playCollection,
+    handleToggleShuffle,
+    handleSkipForward,
+    handleSkipBack,
+    resetQueue
+  } = useQueue()
+  const { prefs, setPref } = usePreferences()
+
+  const initialRoute = prefs.uiMode === 'classic' ? 'classic' : 'home'
+  const [history, setHistory] = useState([initialRoute])
+  const [historyIndex, setHistoryIndex] = useState(0)
+  const [searchFocusTick, setSearchFocusTick] = useState(0)
+  const [drawerState, setDrawerState] = useState({ open: false, tab: 'queue' })
+  const mainRef = useRef(null)
+
+  const activeRoute = history[historyIndex] || 'home'
+
+  const navigateTo = useCallback(
+    (route) => {
+      setHistory((prev) => {
+        const current = prev[historyIndex]
+        if (current === route) return prev
+        const next = [...prev.slice(0, historyIndex + 1), route]
+        setHistoryIndex(next.length - 1)
+        return next
+      })
+      mainRef.current?.scrollTo?.({ top: 0, behavior: 'auto' })
+    },
+    [historyIndex]
+  )
+
+  const goBack = useCallback(() => {
+    setHistoryIndex((idx) => Math.max(0, idx - 1))
+  }, [])
+
+  const goForward = useCallback(() => {
+    setHistoryIndex((idx) => Math.min(history.length - 1, idx + 1))
+  }, [history.length])
+
+  // Initial library hydration once signed in
+  useEffect(() => {
+    if (!isAuthenticated) return
+    fetchUserProfile()
+    fetchPlaylists()
+    fetchLikedSongs()
+    fetchHomeDiscovery()
+  }, [
+    isAuthenticated,
+    fetchUserProfile,
+    fetchPlaylists,
+    fetchLikedSongs,
+    fetchHomeDiscovery
+  ])
+
+  // Menu & Tray navigation events from Electron main process
+  useEffect(
+    () =>
+      onDesktopEvent('ui', 'onNavigate', (target) => {
+        if (target === 'search') {
+          setSearchFocusTick((n) => n + 1)
+        }
+        navigateTo(target)
+      }),
+    [navigateTo]
+  )
+
+  // Global keyboard shortcuts inside the desktop window
+  useEffect(() => {
+    if (!isAuthenticated) return
+
+    const onKeyDown = (event) => {
+      const mod = event.ctrlKey || event.metaKey
+
+      if (mod && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setSearchFocusTick((n) => n + 1)
+        navigateTo('search')
+        return
+      }
+
+      if (mod && event.shiftKey && event.key.toLowerCase() === 'c') {
+        event.preventDefault()
+        navigateTo(activeRoute === 'classic' ? 'home' : 'classic')
+        return
+      }
+
+      if (event.altKey && event.key === 'ArrowLeft') {
+        event.preventDefault()
+        goBack()
+        return
+      }
+
+      if (event.altKey && event.key === 'ArrowRight') {
+        event.preventDefault()
+        goForward()
+        return
+      }
+
+      // Inside Classic Mode, IPod's useKeyboardNavigation handles single-key controls
+      if (activeRoute === 'classic') return
+
+      const tag = event.target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      if (event.key === ' ') {
+        event.preventDefault()
+        if (currentTrack) togglePlayPause()
+      } else if (mod && event.key === 'ArrowRight') {
+        event.preventDefault()
+        handleSkipForward()
+      } else if (mod && event.key === 'ArrowLeft') {
+        event.preventDefault()
+        handleSkipBack()
+      } else if (event.key === 's' || event.key === 'S') {
+        handleToggleShuffle()
+      } else if (event.key === 'r' || event.key === 'R') {
+        cycleRepeatMode()
+      } else if (event.key === '+' || event.key === '=') {
+        setVolume(Math.min(100, volume + 10))
+      } else if (event.key === '-' || event.key === '_') {
+        setVolume(Math.max(0, volume - 10))
+      } else if (event.key === 'm' || event.key === 'M') {
+        setVolume(volume > 0 ? 0 : 50)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    isAuthenticated,
+    activeRoute,
+    currentTrack,
+    volume,
+    navigateTo,
+    goBack,
+    goForward,
+    togglePlayPause,
     handleSkipForward,
     handleSkipBack,
     handleToggleShuffle,
-    resetQueue
-  } = useQueueManager({
-    playbackTrack,
-    playbackReady,
-    play,
-    toggleShuffle,
-    shuffleEnabled,
-    isPlaying,
-    currentProgress,
-    currentPlaylistTracks,
-    likedSongs,
-    currentScreen
-  })
-
-  const progress = duration > 0 ? (currentProgress / duration) * 100 : 0
-
-  // Appearance persistence
-  useEffect(() => {
-    try {
-      const savedAppearance = localStorage.getItem(APPEARANCE_STORAGE_KEY)
-      if (!savedAppearance) return
-
-      const parsedAppearance = JSON.parse(savedAppearance)
-
-      if (parsedAppearance.theme) {
-        setTheme(parsedAppearance.theme)
-      }
-
-      if (parsedAppearance.skin) {
-        setSkin(parsedAppearance.skin)
-      }
-    } catch (error) {
-      logger.error('Error restoring appearance settings:', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ theme, skin }))
-    } catch (error) {
-      logger.error('Error saving appearance settings:', error)
-    }
-  }, [theme, skin])
-
-  // Boot and auth flow
-  useEffect(() => {
-    if (currentScreen === 'boot') {
-      const timer = setTimeout(() => {
-        if (authLoading) return
-        setCurrentScreen(isAuthenticated ? 'main' : 'login')
-      }, 2000)
-      return () => clearTimeout(timer)
-    }
-  }, [currentScreen, isAuthenticated, authLoading, setCurrentScreen])
-
-  useEffect(() => {
-    if (!authLoading && currentScreen === 'boot') return
-    if (!authLoading && currentScreen === 'login' && isAuthenticated) {
-      setCurrentScreen('main')
-      setMenuHistory([])
-      setSelectedIndex(0)
-    }
-  }, [isAuthenticated, authLoading, currentScreen, setCurrentScreen, setMenuHistory, setSelectedIndex])
-
-  // Data fetching
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchUserProfile()
-    }
-  }, [isAuthenticated, fetchUserProfile])
-
-  useEffect(() => {
-    if (isAuthenticated && currentScreen === 'playlists' && playlists.length === 0) {
-      fetchPlaylists()
-    }
-  }, [isAuthenticated, currentScreen, playlists.length, fetchPlaylists])
-
-  useEffect(() => {
-    if (isAuthenticated && currentScreen === 'songs' && likedSongs.length === 0) {
-      fetchLikedSongs()
-    }
-  }, [isAuthenticated, currentScreen, likedSongs.length, fetchLikedSongs])
-
-  // Orchestration handlers
-  const handleSelect = useCallback(async () => {
-    if (currentScreen === 'login') {
-      login()
-      return
-    }
-
-    if (spotifyLoading) return
-
-    if (currentScreen === 'search') {
-      const searchTrackResults = getSearchResults()
-
-      if (searchTrackResults.length > 0 && searchMode === 'results') {
-        const track = searchTrackResults[selectedIndex]
-
-        if (track) {
-          setCurrentSourceTracks(searchTrackResults)
-          applyTrackSelection(searchTrackResults, selectedIndex, { kind: 'search' })
-          navigateForward('nowPlaying')
-          setSearchMode('keyboard')
-
-          if (track.uri) {
-            play(track.uri)
-          }
-        }
-      }
-
-      return
-    }
-
-    const items = getMenuItems()
-    if (items.length === 0) return
-
-    if (currentScreen === 'main') {
-      if (selectedIndex === 0) {
-        navigateForward('music')
-      } else if (selectedIndex === 1) {
-        if (currentTrack) {
-          navigateForward('nowPlaying')
-        }
-      } else if (selectedIndex === 2) {
-        navigateForward('settings')
-      }
-    } else if (currentScreen === 'music') {
-      if (selectedIndex === 0) {
-        navigateForward('playlists')
-      } else if (selectedIndex === 1) {
-        navigateForward('songs')
-      } else if (selectedIndex === 2) {
-        navigateForward('search')
-      }
-    } else if (currentScreen === 'playlists') {
-      if (playlists[selectedIndex]) {
-        await selectPlaylist(playlists[selectedIndex])
-        navigateForward('playlistTracks')
-      }
-    } else if (currentScreen === 'playlistTracks' || currentScreen === 'songs') {
-      const tracks = getCurrentTracks()
-      if (tracks[selectedIndex]) {
-        const selectedTrack = tracks[selectedIndex]
-        navigateForward('nowPlaying')
-
-        if (currentScreen === 'playlistTracks' && selectedPlaylist?.uri) {
-          setCurrentSourceTracks(tracks)
-          applyTrackSelection(tracks, selectedIndex, {
-            kind: 'playlist',
-            contextUri: selectedPlaylist.uri
-          })
-          play(selectedTrack.uri, selectedPlaylist.uri, selectedIndex)
-        } else {
-          const likedSongsQueue = createLikedSongsQueue(tracks, selectedTrack.id, queueShuffleEnabled)
-          const queueUris = likedSongsQueue.map((track) => track.uri).filter(Boolean)
-
-          setCurrentSourceTracks(tracks)
-          applyTrackSelection(likedSongsQueue, 0, {
-            kind: 'queue'
-          })
-
-          if (queueUris.length > 0) {
-            if (shuffleEnabled) {
-              await toggleShuffle({
-                syncRemote: true,
-                forceState: false
-              })
-            }
-
-            play(queueUris[0], null, 0, queueUris)
-          }
-        }
-      }
-    }
-  }, [
-    currentScreen,
-    selectedIndex,
-    login,
-    spotifyLoading,
-    getSearchResults,
-    searchMode,
-    navigateForward,
-    play,
-    getMenuItems,
-    currentTrack,
-    playlists,
-    selectPlaylist,
-    getCurrentTracks,
-    selectedPlaylist,
-    createLikedSongsQueue,
-    toggleShuffle,
-    shuffleEnabled,
-    queueShuffleEnabled,
-    applyTrackSelection,
-    setCurrentSourceTracks,
-    setSearchMode
+    cycleRepeatMode,
+    setVolume
   ])
 
-  const handleSearch = useCallback(async (query) => {
-    const results = await searchAll(query)
+  const handleOpenPlaylist = useCallback(
+    async (playlist, options = {}) => {
+      if (!playlist) return
+      navigateTo('playlist')
+      const tracks = await selectPlaylist(playlist)
+      if (options.autoPlay && tracks?.length > 0) {
+        await playCollection({
+          tracks,
+          startIndex: 0,
+          contextUri: playlist.uri,
+          sourceLabel: playlist.name
+        })
+      }
+    },
+    [navigateTo, selectPlaylist, playCollection]
+  )
 
-    if (results?.tracks?.length > 0) {
-      setSearchMode('results')
-      setSelectedIndex(0)
-    }
-  }, [searchAll, setSearchMode, setSelectedIndex])
+  const handleOpenAlbum = useCallback(
+    async (albumId) => {
+      if (!albumId) return
+      navigateTo('album')
+      await openAlbum(albumId)
+    },
+    [navigateTo, openAlbum]
+  )
 
-  const handlePlayPause = useCallback(() => {
-    if (currentTrack && playbackReady) {
-      togglePlayPause()
-    }
-  }, [currentTrack, playbackReady, togglePlayPause])
+  const handleOpenArtist = useCallback(
+    async (artistId) => {
+      if (!artistId) return
+      navigateTo('artist')
+      await openArtist(artistId)
+    },
+    [navigateTo, openArtist]
+  )
 
-  // Appearance (theme/skin) intentionally persists across logout — user preference, not session state
-  const handleLogout = useCallback(() => {
-    logout()
-    resetNavigation()
+  const handleLogout = useCallback(async () => {
+    await logout()
     resetQueue()
-  }, [logout, resetNavigation, resetQueue])
+    setHistory(['home'])
+    setHistoryIndex(0)
+  }, [logout, resetQueue])
 
-  const handleSeek = useCallback((positionMs) => {
-    if (playbackReady && duration > 0) {
-      seek(positionMs)
-    }
-  }, [playbackReady, duration, seek])
+  if (authLoading) {
+    return (
+      <div className="pp-login-shell">
+        <div className="pp-login-drag" />
+        <div className="pp-login-center">
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+            <div className="pp-brand-wheel" style={{ width: 44, height: 44, borderRadius: 12 }}>
+              <div className="pp-brand-wheel__ring" style={{ width: 25, height: 25 }}>
+                <div className="pp-brand-wheel__dot" style={{ width: 6, height: 6 }} />
+              </div>
+            </div>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--fg-secondary)' }}>
+              Starting PixelPod…
+            </span>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
-  const handleVolumeChange = useCallback((newVolume) => {
-    setVolume(newVolume)
-  }, [setVolume])
-
-  const menuItems = useMemo(() => getMenuItems(), [getMenuItems])
+  if (!isAuthenticated) {
+    return (
+      <>
+        <LoginPage />
+        <ToastViewport />
+      </>
+    )
+  }
 
   return (
-    <div className={`app theme-${theme} skin-${skin}`}>
-      <IPod
-        currentScreen={currentScreen}
-        menuItems={menuItems}
-        selectedIndex={selectedIndex}
-        onSelect={handleSelect}
-        onBack={handleBack}
-        onNext={handleNext}
-        onPrevious={handlePrevious}
-        onPlayPause={handlePlayPause}
-        onSkipForward={handleSkipForward}
-        onSkipBack={handleSkipBack}
-        currentTrack={currentTrack}
-        isPlaying={isPlaying}
-        isLoading={playbackLoading}
-        progress={progress}
-        currentProgress={currentProgress}
-        duration={duration}
-        volume={volume}
-        shuffleEnabled={effectiveShuffleEnabled}
-        repeatMode={repeatMode}
-        onSeek={handleSeek}
-        onToggleShuffle={handleToggleShuffle}
-        onCycleRepeatMode={cycleRepeatMode}
-        onVolumeChange={handleVolumeChange}
-        playbackError={playbackError}
-        playbackReady={playbackReady}
-        searchResults={searchResults}
-        spotifyError={spotifyError}
-        onSearch={handleSearch}
-        searchMode={searchMode}
-        userProfile={userProfile}
-        onLogout={handleLogout}
-        transitionDirection={transitionDirection}
-        theme={theme}
-        skin={skin}
-        onThemeChange={setTheme}
-        onSkinChange={setSkin}
+    <div className={`pp-shell ${prefs.sidebarCollapsed ? 'pp-shell--collapsed' : ''}`}>
+      <TitleBar
+        canGoBack={historyIndex > 0}
+        canGoForward={historyIndex < history.length - 1}
+        onBack={goBack}
+        onForward={goForward}
+        onOpenSearch={() => {
+          setSearchFocusTick((n) => n + 1)
+          navigateTo('search')
+        }}
+        onOpenDevices={() => setDrawerState({ open: true, tab: 'devices' })}
+        isClassicRoute={activeRoute === 'classic'}
+        onToggleClassic={() => navigateTo(activeRoute === 'classic' ? 'home' : 'classic')}
       />
+
+      <Sidebar
+        activeRoute={activeRoute}
+        selectedPlaylistId={selectedPlaylist?.id}
+        collapsed={Boolean(prefs.sidebarCollapsed)}
+        playlists={playlists}
+        userProfile={userProfile}
+        onNavigate={(route) => {
+          if (route === 'search') setSearchFocusTick((n) => n + 1)
+          navigateTo(route)
+        }}
+        onOpenPlaylist={handleOpenPlaylist}
+        onToggleCollapse={() => setPref('sidebarCollapsed', !prefs.sidebarCollapsed)}
+      />
+
+      <main ref={mainRef} className="pp-main">
+        {activeRoute === 'home' && (
+          <HomePage
+            onOpenPlaylist={handleOpenPlaylist}
+            onOpenLiked={() => navigateTo('liked')}
+            onOpenRecent={() => navigateTo('recent')}
+            onOpenArtist={handleOpenArtist}
+            onOpenLibrary={() => navigateTo('library')}
+            onSwitchClassic={() => navigateTo('classic')}
+          />
+        )}
+
+        {activeRoute === 'search' && (
+          <SearchPage
+            focusSignal={searchFocusTick}
+            onOpenPlaylist={handleOpenPlaylist}
+            onOpenAlbum={handleOpenAlbum}
+            onOpenArtist={handleOpenArtist}
+          />
+        )}
+
+        {activeRoute === 'library' && (
+          <LibraryPage
+            onOpenPlaylist={handleOpenPlaylist}
+            onOpenAlbum={handleOpenAlbum}
+            onOpenLiked={() => navigateTo('liked')}
+          />
+        )}
+
+        {activeRoute === 'liked' && <CollectionPage kind="liked" />}
+        {activeRoute === 'recent' && <CollectionPage kind="recent" />}
+        {activeRoute === 'playlist' && <CollectionPage kind="playlist" />}
+        {activeRoute === 'album' && <CollectionPage kind="album" />}
+        {activeRoute === 'artist' && <CollectionPage kind="artist" />}
+
+        {activeRoute === 'nowPlaying' && (
+          <NowPlayingPage
+            onOpenDevices={() => setDrawerState({ open: true, tab: 'devices' })}
+            onSwitchClassic={() => navigateTo('classic')}
+            onBrowseHome={() => navigateTo('home')}
+          />
+        )}
+
+        {activeRoute === 'settings' && (
+          <SettingsPage
+            onOpenDevices={() => setDrawerState({ open: true, tab: 'devices' })}
+            onLogout={handleLogout}
+          />
+        )}
+
+        {activeRoute === 'classic' && (
+          <ClassicModePage
+            skipBoot
+            onExitClassic={() => navigateTo('home')}
+          />
+        )}
+      </main>
+
+      <PlayerBar
+        onOpenNowPlaying={() => navigateTo('nowPlaying')}
+        onToggleQueue={() =>
+          setDrawerState((prev) =>
+            prev.open && prev.tab === 'queue'
+              ? { open: false, tab: 'queue' }
+              : { open: true, tab: 'queue' }
+          )
+        }
+        onOpenDevices={() =>
+          setDrawerState((prev) =>
+            prev.open && prev.tab === 'devices'
+              ? { open: false, tab: 'devices' }
+              : { open: true, tab: 'devices' }
+          )
+        }
+        isQueueOpen={drawerState.open && drawerState.tab === 'queue'}
+      />
+
+      <QueueDrawer
+        open={drawerState.open}
+        initialTab={drawerState.tab}
+        onClose={() => setDrawerState((prev) => ({ ...prev, open: false }))}
+      />
+
+      <ToastViewport />
     </div>
   )
 }
-
-export default App

@@ -29,12 +29,15 @@ export default [
         clearTimeout: 'readonly',
         setInterval: 'readonly',
         clearInterval: 'readonly',
+        requestAnimationFrame: 'readonly',
+        cancelAnimationFrame: 'readonly',
         navigator: 'readonly',
         AbortController: 'readonly',
         Image: 'readonly',
         Audio: 'readonly',
         HTMLElement: 'readonly',
         CustomEvent: 'readonly',
+        MediaMetadata: 'readonly',
         performance: 'readonly',
         Spotify: 'readonly'
       }
@@ -56,7 +59,57 @@ export default [
     }
   },
   {
-    files: ['src/**/__tests__/**/*.{js,jsx}', 'src/**/*.test.{js,jsx}', 'src/**/*.spec.{js,jsx}'],
+    files: ['electron/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        Buffer: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        Headers: 'readonly'
+      }
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-console': ['warn', { allow: ['warn', 'error'] }]
+    }
+  },
+  {
+    files: ['electron/**/*.cjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        process: 'readonly',
+        console: 'readonly'
+      }
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }]
+    }
+  },
+  {
+    files: [
+      'src/**/__tests__/**/*.{js,jsx}',
+      'src/**/*.test.{js,jsx}',
+      'src/**/*.spec.{js,jsx}',
+      'electron/**/__tests__/**/*.js',
+      'electron/**/*.test.js'
+    ],
     languageOptions: {
       globals: {
         describe: 'readonly',
@@ -72,6 +125,6 @@ export default [
     }
   },
   {
-    ignores: ['dist/', 'node_modules/', 'server/']
+    ignores: ['dist/', 'release/', 'node_modules/']
   }
 ]

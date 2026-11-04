@@ -1,113 +1,145 @@
-import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   restoreAuthSession,
-  completeAuthCallback,
-  beginSpotifyLogin,
+  completeLogin,
+  cancelSpotifyLogin,
   clearAuthSession
 } from '@/services/authService'
+import { resetTokenCache } from '@/utils/spotifyAuth'
+import { desktop, onDesktopEvent } from '@/desktop/bridge'
 import { logger } from '@/utils/logger'
 
 const AuthContext = createContext(null)
 
+const LOGIN_ERROR_MESSAGES = {
+  NO_CLIENT_ID: 'Add your Spotify Client ID to connect.',
+  ACCESS_DENIED: 'Spotify authorization was cancelled.',
+  CANCELLED: null,
+  SUPERSEDED: null,
+  TIMEOUT: 'Login timed out. Please try again.',
+  PORT_IN_USE: null, // main process message already explains the fix
+  NETWORK: 'Could not reach Spotify. Check your internet connection.'
+}
+
+const describeLoginError = (err) => {
+  if (err?.code && Object.hasOwn(LOGIN_ERROR_MESSAGES, err.code)) {
+    const message = LOGIN_ERROR_MESSAGES[err.code]
+    return message === null && (err.code === 'CANCELLED' || err.code === 'SUPERSEDED') ? null : message || err.message
+  }
+  return err?.message || 'Failed to connect Spotify'
+}
+
+/**
+ * Authentication state for the renderer.
+ *
+ * The OAuth session itself lives in the Electron main process; this provider
+ * mirrors its status, triggers login/logout through the preload bridge and
+ * loads the Spotify profile.
+ */
 export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
   const [error, setError] = useState(null)
   const [user, setUser] = useState(null)
+  const [status, setStatus] = useState(null)
+  const authenticatedRef = useRef(false)
 
-  // Check for existing authentication on mount
+  const applySession = useCallback((session) => {
+    authenticatedRef.current = session.isAuthenticated
+    setIsAuthenticated(session.isAuthenticated)
+    setUser(session.user)
+    setError(session.error)
+    if (session.status) setStatus(session.status)
+  }, [])
+
+  // Restore an existing session on mount
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const session = await restoreAuthSession()
-        setIsAuthenticated(session.isAuthenticated)
-        setUser(session.user)
-        setError(session.error)
-      } catch (err) {
+    let cancelled = false
+    restoreAuthSession()
+      .then((session) => {
+        if (!cancelled) applySession(session)
+      })
+      .catch((err) => {
         logger.error('Auth check failed:', err)
-        setError(err.message || 'Unable to verify Spotify login')
-      } finally {
-        setIsLoading(false)
-      }
+        if (!cancelled) setError(err.message || 'Unable to verify Spotify login')
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
     }
+  }, [applySession])
 
-    checkAuth()
-  }, [])
-
-  // Handle OAuth callback
-  useEffect(() => {
-    const handleCallback = async () => {
-      const params = new URLSearchParams(window.location.search)
-      const code = params.get('code')
-      const state = params.get('state')
-      const error = params.get('error')
-
-      if (error) {
-        setError(`Spotify authorization failed: ${error}`)
-        setIsLoading(false)
-        // Clean URL
-        window.history.replaceState({}, document.title, '/')
-        return
-      }
-
-      if (code && state) {
-        // Prevent double execution (React Strict Mode calls effects twice)
-        const callbackKey = `pixelpod_callback_${state}`
-        if (sessionStorage.getItem(callbackKey)) {
-          // Already processed this callback, clean URL and return
-          window.history.replaceState({}, document.title, '/')
-          return
+  // Mirror session changes made by the main process (revoked grant, client ID change, …)
+  useEffect(
+    () =>
+      onDesktopEvent('auth', 'onChanged', (next) => {
+        setStatus(next)
+        if (!next.authenticated && authenticatedRef.current) {
+          resetTokenCache()
+          authenticatedRef.current = false
+          setIsAuthenticated(false)
+          setUser(null)
+          setError('Your Spotify session ended. Connect again to continue.')
         }
-        sessionStorage.setItem(callbackKey, 'processing')
-
-        setIsLoading(true)
-        try {
-          const session = await completeAuthCallback(code, state)
-          setIsAuthenticated(session.isAuthenticated)
-          setUser(session.user)
-          setError(session.error)
-        } catch (err) {
-          logger.error('Token exchange failed:', err)
-          setError(err.message)
-        } finally {
-          setIsLoading(false)
-          // Clean URL
-          window.history.replaceState({}, document.title, '/')
-          // Clean up the callback marker
-          sessionStorage.removeItem(callbackKey)
-        }
-      }
-    }
-
-    handleCallback()
-  }, [])
+      }),
+    []
+  )
 
   const login = useCallback(async () => {
-    setIsLoading(true)
+    setIsLoggingIn(true)
     setError(null)
     try {
-      await beginSpotifyLogin()
+      applySession(await completeLogin())
     } catch (err) {
-      setError(err.message || 'Failed to initiate login')
-      setIsLoading(false)
+      logger.error('Login failed:', err)
+      setError(describeLoginError(err))
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }, [applySession])
+
+  const cancelLogin = useCallback(async () => {
+    try {
+      await cancelSpotifyLogin()
+    } catch (err) {
+      logger.warn('Cancel login failed:', err)
     }
   }, [])
 
-  const logout = useCallback(() => {
-    clearAuthSession()
+  const logout = useCallback(async () => {
+    try {
+      await clearAuthSession()
+    } catch (err) {
+      logger.error('Logout failed:', err)
+    }
+    authenticatedRef.current = false
     setIsAuthenticated(false)
     setUser(null)
     setError(null)
   }, [])
 
+  const setClientId = useCallback(async (clientId) => {
+    if (!desktop) throw new Error('Desktop bridge unavailable')
+    await desktop.prefs.set('clientId', clientId.trim())
+    setStatus(await desktop.auth.getStatus())
+  }, [])
+
   const value = useMemo(() => ({
     isAuthenticated,
     isLoading,
+    isLoggingIn,
     error,
     user,
+    status,
+    isDesktop: Boolean(desktop),
     login,
-    logout
-  }), [isAuthenticated, isLoading, error, user, login, logout])
+    cancelLogin,
+    logout,
+    setClientId
+  }), [isAuthenticated, isLoading, isLoggingIn, error, user, status, login, cancelLogin, logout, setClientId])
 
   return (
     <AuthContext.Provider value={value}>

@@ -7,13 +7,17 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & build output
 node_modules
 dist
 dist-ssr
+release
 *.local
 
-# Environment variables
+# Environment variables — never commit credentials
 .env
+.env.local
+.env.*.local
 
 # Editor directories and files
 .vscode/*
@@ -26,4 +30,6 @@ dist-ssr
 *.sln
 *.sw?
 
+# Local task tracker
 TODO.md
+TODO2.md
