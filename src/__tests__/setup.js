@@ -3,13 +3,17 @@ import { afterEach, beforeAll, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
 afterEach(() => {
-  cleanup()
-  localStorage.clear()
-  sessionStorage.clear()
+  if (typeof window !== 'undefined') {
+    cleanup()
+    window.localStorage?.clear?.()
+    window.sessionStorage?.clear?.()
+  }
   vi.restoreAllMocks()
 })
 
 beforeAll(() => {
+  if (typeof window === 'undefined') return
+
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: vi.fn().mockImplementation((query) => ({
@@ -24,8 +28,10 @@ beforeAll(() => {
     }))
   })
 
-  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-    writable: true,
-    value: vi.fn()
-  })
+  if (typeof HTMLElement !== 'undefined') {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      writable: true,
+      value: vi.fn()
+    })
+  }
 })

@@ -157,7 +157,7 @@ function Screen({
           transitionDirection === 'forward' ? 'slide-left' : 'slide-right'
         }`}
         tabIndex={-1}
-        outline="none"
+        style={{ outline: 'none' }}
       >
         {renderScreen(displayScreen)}
       </div>

@@ -1,0 +1,70 @@
+appId: com.pixelpod.app
+productName: PixelPod
+copyright: Copyright © PixelPod contributors
+
+# castLabs Electron for Content Security (Widevine) — see docs/ARCHITECTURE.md (D4)
+electronVersion: 44.10.1+wvcus
+electronDownload:
+  mirror: https://github.com/castlabs/electron-releases/releases/download/
+
+directories:
+  output: release
+  buildResources: build
+
+# Only ship the built renderer, the Electron code and runtime resources.
+# .env files, sources, tests and docs are never packaged.
+files:
+  - dist/**
+  - electron/**
+  - "!electron/**/*.test.js"
+  - "!electron/**/__tests__/**"
+  - package.json
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - "**/*"
+
+asar: true
+
+# Optional Widevine VMP signing (required by some DRM services in production).
+# Runs only when PIXELPOD_VMP_SIGN=1 — see SETUP.md.
+afterPack: scripts/vmp-after-pack.cjs
+afterSign: scripts/vmp-after-sign.cjs
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: ${productName}-${version}-${os}-${arch}-${name}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PixelPod
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+portable:
+  artifactName: ${productName}-Portable-${version}.${ext}
+
+mac:
+  icon: build/icon.png
+  category: public.app-category.music
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  hardenedRuntime: true
+
+linux:
+  icon: build/icon.png
+  category: AudioVideo
+  target:
+    - AppImage
+    - deb
+  maintainer: PixelPod

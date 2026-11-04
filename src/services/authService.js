@@ -1,9 +1,9 @@
 import {
-  getStoredTokens,
+  getAuthStatus,
   getValidToken,
-  exchangeCodeForToken,
-  clearTokens,
-  initiateLogin
+  initiateLogin,
+  cancelLogin,
+  clearTokens
 } from '@/utils/spotifyAuth'
 
 const SPOTIFY_PROFILE_ENDPOINT = 'https://api.spotify.com/v1/me'
@@ -22,29 +22,38 @@ export async function fetchAuthenticatedUserProfile(token) {
   return response.json()
 }
 
+/**
+ * Restore the session held by the desktop main process.
+ * Returns `{ isAuthenticated, user, error, status }`.
+ */
 export async function restoreAuthSession() {
-  const storedTokens = getStoredTokens()
-  const token = await getValidToken()
+  const status = await getAuthStatus()
 
+  if (!status.authenticated) {
+    return { isAuthenticated: false, user: null, error: null, status }
+  }
+
+  const token = await getValidToken()
   if (!token) {
+    // Tokens exist but could not be refreshed: offline, or the grant was revoked.
+    const latest = await getAuthStatus()
     return {
       isAuthenticated: false,
       user: null,
-      error: storedTokens ? 'Login expired. Connect Spotify again.' : null
+      error: latest.authenticated
+        ? 'Could not reach Spotify. Check your connection and try again.'
+        : 'Login expired. Connect Spotify again.',
+      status: latest
     }
   }
 
   const user = await fetchAuthenticatedUserProfile(token)
-
-  return {
-    isAuthenticated: true,
-    user,
-    error: null
-  }
+  return { isAuthenticated: true, user, error: null, status }
 }
 
-export async function completeAuthCallback(code, state) {
-  await exchangeCodeForToken(code, state)
+/** Run the full desktop login (system browser + loopback callback), then load the profile. */
+export async function completeLogin() {
+  const status = await initiateLogin()
   const token = await getValidToken()
 
   if (!token) {
@@ -52,19 +61,13 @@ export async function completeAuthCallback(code, state) {
   }
 
   const user = await fetchAuthenticatedUserProfile(token)
-
-  return {
-    isAuthenticated: true,
-    user,
-    error: null
-  }
+  return { isAuthenticated: true, user, error: null, status }
 }
 
-export function beginSpotifyLogin() {
-  return initiateLogin()
+export function cancelSpotifyLogin() {
+  return cancelLogin()
 }
 
 export function clearAuthSession() {
-  clearTokens()
+  return clearTokens()
 }
-

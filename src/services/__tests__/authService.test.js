@@ -1,16 +1,16 @@
 import {
-  beginSpotifyLogin,
+  cancelSpotifyLogin,
   clearAuthSession,
-  completeAuthCallback,
+  completeLogin,
   restoreAuthSession
 } from '../authService'
 
 const mockSpotifyAuth = vi.hoisted(() => ({
-  getStoredTokens: vi.fn(),
+  getAuthStatus: vi.fn(),
   getValidToken: vi.fn(),
-  exchangeCodeForToken: vi.fn(),
-  clearTokens: vi.fn(),
-  initiateLogin: vi.fn()
+  initiateLogin: vi.fn(),
+  cancelLogin: vi.fn(),
+  clearTokens: vi.fn()
 }))
 
 vi.mock('../../utils/spotifyAuth', () => mockSpotifyAuth)
@@ -20,21 +20,38 @@ describe('authService', () => {
     global.fetch = vi.fn()
   })
 
-  it('returns an expired-session message when stored tokens exist but no valid token can be restored', async () => {
-    mockSpotifyAuth.getStoredTokens.mockReturnValue({ refresh_token: 'refresh-token' })
+  it('returns unauthenticated without error when no desktop session exists', async () => {
+    mockSpotifyAuth.getAuthStatus.mockResolvedValue({ authenticated: false, hasClientId: true })
+
+    await expect(restoreAuthSession()).resolves.toEqual({
+      isAuthenticated: false,
+      user: null,
+      error: null,
+      status: { authenticated: false, hasClientId: true }
+    })
+
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('returns an expired-session message when a stored grant is rejected on refresh', async () => {
+    mockSpotifyAuth.getAuthStatus
+      .mockResolvedValueOnce({ authenticated: true, hasClientId: true })
+      .mockResolvedValueOnce({ authenticated: false, hasClientId: true })
     mockSpotifyAuth.getValidToken.mockResolvedValue(null)
 
     await expect(restoreAuthSession()).resolves.toEqual({
       isAuthenticated: false,
       user: null,
-      error: 'Login expired. Connect Spotify again.'
+      error: 'Login expired. Connect Spotify again.',
+      status: { authenticated: false, hasClientId: true }
     })
 
     expect(fetch).not.toHaveBeenCalled()
   })
 
   it('restores the authenticated user profile when a valid token exists', async () => {
-    mockSpotifyAuth.getStoredTokens.mockReturnValue(null)
+    const status = { authenticated: true, hasClientId: true }
+    mockSpotifyAuth.getAuthStatus.mockResolvedValue(status)
     mockSpotifyAuth.getValidToken.mockResolvedValue('access-token')
     fetch.mockResolvedValue({
       ok: true,
@@ -44,7 +61,8 @@ describe('authService', () => {
     await expect(restoreAuthSession()).resolves.toEqual({
       isAuthenticated: true,
       user: { id: 'user-1', display_name: 'Pixel Listener' },
-      error: null
+      error: null,
+      status
     })
 
     expect(fetch).toHaveBeenCalledWith('https://api.spotify.com/v1/me', {
@@ -54,30 +72,33 @@ describe('authService', () => {
     })
   })
 
-  it('completes the callback flow by exchanging the code and fetching the Spotify profile', async () => {
-    mockSpotifyAuth.exchangeCodeForToken.mockResolvedValue(undefined)
+  it('completes the PKCE login flow via the main process and fetches the profile', async () => {
+    const status = { authenticated: true, hasClientId: true }
+    mockSpotifyAuth.initiateLogin.mockResolvedValue(status)
     mockSpotifyAuth.getValidToken.mockResolvedValue('fresh-token')
     fetch.mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ id: 'user-2', display_name: 'Fresh Session' })
     })
 
-    await expect(completeAuthCallback('auth-code', 'callback-state')).resolves.toEqual({
+    await expect(completeLogin()).resolves.toEqual({
       isAuthenticated: true,
       user: { id: 'user-2', display_name: 'Fresh Session' },
-      error: null
+      error: null,
+      status
     })
 
-    expect(mockSpotifyAuth.exchangeCodeForToken).toHaveBeenCalledWith('auth-code', 'callback-state')
+    expect(mockSpotifyAuth.initiateLogin).toHaveBeenCalledTimes(1)
   })
 
-  it('delegates login and logout actions to the auth utility layer', async () => {
-    mockSpotifyAuth.initiateLogin.mockResolvedValue(undefined)
+  it('delegates cancel and logout actions to the auth bridge', async () => {
+    mockSpotifyAuth.cancelLogin.mockResolvedValue(undefined)
+    mockSpotifyAuth.clearTokens.mockResolvedValue(undefined)
 
-    await beginSpotifyLogin()
-    clearAuthSession()
+    await cancelSpotifyLogin()
+    await clearAuthSession()
 
-    expect(mockSpotifyAuth.initiateLogin).toHaveBeenCalledTimes(1)
+    expect(mockSpotifyAuth.cancelLogin).toHaveBeenCalledTimes(1)
     expect(mockSpotifyAuth.clearTokens).toHaveBeenCalledTimes(1)
   })
 })

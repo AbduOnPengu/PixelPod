@@ -12,20 +12,21 @@
   border-radius: 50%;
   background: var(--wheel-bg);
   box-shadow:
-    0 8px 20px rgba(0, 0, 0, 0.2),
+    0 10px 24px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+    inset 0 -1px 0 rgba(0, 0, 0, 0.22);
   position: relative;
-  cursor: pointer;
+  cursor: grab;
   border: 3px solid var(--wheel-border);
   user-select: none;
-  touch-action: none;           /* prevent scroll hijack on mobile */
-  -webkit-touch-callout: none;  /* prevent iOS long-press menu */
-  transition: transform 0.1s ease;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  transition: transform 0.12s ease, box-shadow 0.16s ease;
 }
 
 .wheel-outer:active {
-  transform: scale(0.98);
+  cursor: grabbing;
+  transform: scale(0.985);
 }
 
 .wheel-inner {
@@ -38,7 +39,7 @@
   border-radius: 50%;
   background: var(--wheel-inner-bg);
   box-shadow:
-    0 4px 12px rgba(0, 0, 0, 0.15),
+    0 4px 12px rgba(0, 0, 0, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
   display: flex;
   justify-content: center;
@@ -54,9 +55,9 @@
   background: transparent;
   color: var(--wheel-text);
   font-size: 7px;
-  font-family: "Press Start 2P", monospace;
+  font-family: 'Press Start 2P', monospace;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.16s ease, transform 0.14s ease;
 }
 
 .center-button:hover {
@@ -73,21 +74,16 @@
   background: transparent;
   border: none;
   color: var(--wheel-text);
-  font-size: 12px;
-  font-family: "Press Start 2P", monospace;
+  font-size: 11px;
+  font-family: 'Press Start 2P', monospace;
   cursor: pointer;
   padding: 8px;
-  transition: all 0.2s ease;
+  transition: color 0.16s ease, transform 0.14s ease;
   z-index: 2;
 }
 
 .wheel-button:hover {
   color: var(--accent);
-  transform: scale(1.2);
-}
-
-.wheel-button:active {
-  transform: scale(0.9);
 }
 
 .wheel-button.top {
@@ -97,10 +93,26 @@
   font-size: 7px;
 }
 
+.wheel-button.top:hover {
+  transform: translateX(-50%) scale(1.1);
+}
+
+.wheel-button.top:active {
+  transform: translateX(-50%) scale(0.94);
+}
+
 .wheel-button.right {
-  right: 15px;
+  right: 14px;
   top: 50%;
   transform: translateY(-50%);
+}
+
+.wheel-button.right:hover {
+  transform: translateY(-50%) scale(1.12);
+}
+
+.wheel-button.right:active {
+  transform: translateY(-50%) scale(0.94);
 }
 
 .wheel-button.bottom {
@@ -109,8 +121,24 @@
   transform: translateX(-50%);
 }
 
+.wheel-button.bottom:hover {
+  transform: translateX(-50%) scale(1.12);
+}
+
+.wheel-button.bottom:active {
+  transform: translateX(-50%) scale(0.94);
+}
+
 .wheel-button.left {
-  left: 15px;
+  left: 14px;
   top: 50%;
   transform: translateY(-50%);
+}
+
+.wheel-button.left:hover {
+  transform: translateY(-50%) scale(1.12);
+}
+
+.wheel-button.left:active {
+  transform: translateY(-50%) scale(0.94);
 }
