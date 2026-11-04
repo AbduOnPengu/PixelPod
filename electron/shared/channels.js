@@ -9,6 +9,9 @@ export const INVOKE_CHANNELS = Object.freeze({
   AUTH_CANCEL: 'auth:cancel',
   AUTH_LOGOUT: 'auth:logout',
   AUTH_TOKEN: 'auth:token',
+  AUDIO_START: 'audio:start',
+  AUDIO_STOP: 'audio:stop',
+  AUDIO_COMMAND: 'audio:command',
   PREFS_GET_ALL: 'prefs:getAll',
   PREFS_SET: 'prefs:set',
   APP_INFO: 'app:info',
@@ -21,11 +24,21 @@ export const SEND_CHANNELS = Object.freeze({
 
 export const EVENT_CHANNELS = Object.freeze({
   AUTH_CHANGED: 'auth:changed',
+  AUDIO_EVENT: 'audio:event',
   PREFS_CHANGED: 'prefs:changed',
   PLAYER_COMMAND: 'player:command',
   NAVIGATE: 'ui:navigate'
 })
 
+export const AUDIO_COMMANDS = Object.freeze([
+  'pause',
+  'resume',
+  'nextTrack',
+  'previousTrack',
+  'seek',
+  'setVolume',
+  'getState'
+])
 export const PLAYER_COMMANDS = Object.freeze(['playPause', 'next', 'previous'])
 export const NAVIGATE_TARGETS = Object.freeze(['home', 'search', 'library', 'settings', 'nowPlaying', 'classic'])
 

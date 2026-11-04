@@ -18,7 +18,7 @@ import {
   fetchRemoteQueue,
   addTrackToRemoteQueue
 } from '@/services/playbackService'
-import { desktop } from '@/desktop/bridge'
+import { desktop, onDesktopEvent } from '@/desktop/bridge'
 import { logger } from '@/utils/logger'
 import { REPEAT_MODES } from '@/constants/playback'
 
@@ -26,6 +26,7 @@ const PlaybackContext = createContext(null)
 
 const SDK_SCRIPT_URL = 'https://sdk.scdn.co/spotify-player.js'
 const SDK_READY_TIMEOUT_MS = 12000
+const REPLAY_WINDOW_MS = 12000
 
 let sdkLoadPromise = null
 
@@ -92,22 +93,30 @@ export function PlaybackProvider({ children }) {
   const [currentTrack, setCurrentTrack] = useState(null)
 
   const playerRef = useRef(null)
+  const sdkDeviceIdRef = useRef(null)
+  const sdkDisabledRef = useRef(false)
+  const lastPlayRequestRef = useRef(null)
 
   const refreshDevices = useCallback(async () => {
     try {
       const token = await getValidToken()
       if (!token) return []
       const list = await fetchAvailableDevices(token)
-      setDevices(list)
-      return list
+      const filtered = sdkDisabledRef.current
+        ? list.filter((d) => d.id !== sdkDeviceIdRef.current)
+        : list
+      setDevices(filtered)
+      return filtered
     } catch (err) {
       logger.warn('Unable to fetch Spotify devices:', err)
       return []
     }
   }, [])
 
-  const applyRemoteState = useCallback((state) => {
+  const applyRemoteState = useCallback((state, ignoreDeviceId = null) => {
     if (!state) return
+    if (ignoreDeviceId && state.device?.id === ignoreDeviceId) return
+
     setIsPlaying(Boolean(state.is_playing))
     setCurrentProgress(state.progress_ms ?? 0)
     setDuration(state.item?.duration_ms ?? 0)
@@ -131,48 +140,89 @@ export function PlaybackProvider({ children }) {
     setIsLoading(false)
   }, [])
 
-  const activateConnectFallback = useCallback(async (reason) => {
-    logger.warn('Switching to Spotify Connect mode:', reason)
-    setSdkFallbackReason(reason)
-    setPlaybackMode('connect')
+  const activateConnectFallback = useCallback(
+    async (reason, { replayPending = false, deadSdkId = null } = {}) => {
+      logger.warn('Switching to Spotify Connect mode:', reason)
+      setSdkFallbackReason(reason)
+      setPlaybackMode('connect')
 
-    try {
-      const token = await getValidToken()
-      if (!token) return
-      const [remoteState, availableDevices] = await Promise.all([
-        fetchRemotePlaybackState(token).catch(() => null),
-        fetchAvailableDevices(token).catch(() => [])
-      ])
+      try {
+        const token = await getValidToken()
+        if (!token) return
+        const [remoteState, rawDevices] = await Promise.all([
+          fetchRemotePlaybackState(token).catch(() => null),
+          fetchAvailableDevices(token).catch(() => [])
+        ])
 
-      setDevices(availableDevices)
-      if (remoteState) {
-        applyRemoteState(remoteState)
-        return
-      }
+        const ignoredId = deadSdkId || (sdkDisabledRef.current ? sdkDeviceIdRef.current : null)
+        const availableDevices = ignoredId
+          ? rawDevices.filter((d) => d.id !== ignoredId)
+          : rawDevices
+        setDevices(availableDevices)
 
-      const preferred = availableDevices.find((d) => d.is_active) || availableDevices[0]
-      if (preferred) {
-        setDeviceId(preferred.id)
-        setActiveDeviceName(preferred.name)
-        if (typeof preferred.volume_percent === 'number') {
-          setVolumeState(preferred.volume_percent)
+        const preferred = availableDevices.find((d) => d.is_active) || availableDevices[0]
+        const pendingPlay = lastPlayRequestRef.current
+        const shouldReplay =
+          replayPending &&
+          preferred &&
+          pendingPlay &&
+          Date.now() - pendingPlay.at < REPLAY_WINDOW_MS
+
+        if (shouldReplay) {
+          lastPlayRequestRef.current = null
+          setDeviceId(preferred.id)
+          setActiveDeviceName(preferred.name || 'Spotify Device')
+          setIsReady(true)
+          await startPlaybackSession({
+            token,
+            deviceId: preferred.id,
+            ...pendingPlay.params
+          })
+          setIsPlaying(true)
+          setIsLoading(false)
+          setError(null)
+          return
         }
-        setIsReady(true)
-        setError(null)
-      } else {
-        setIsReady(false)
-        setError('Open Spotify on your computer or phone to play via Spotify Connect.')
-      }
-    } catch (err) {
-      logger.error('Spotify Connect fallback error:', err)
-    }
-  }, [applyRemoteState])
 
-  // Initialize Spotify Web Playback SDK (with automatic Spotify Connect fallback)
+        if (remoteState && (!ignoredId || remoteState.device?.id !== ignoredId)) {
+          applyRemoteState(remoteState, ignoredId)
+          return
+        }
+
+        if (preferred) {
+          setDeviceId(preferred.id)
+          setActiveDeviceName(preferred.name)
+          if (typeof preferred.volume_percent === 'number') {
+            setVolumeState(preferred.volume_percent)
+          }
+          setIsReady(true)
+          setIsLoading(false)
+          setError(null)
+        } else {
+          setDeviceId(null)
+          setActiveDeviceName(null)
+          setIsReady(false)
+          setIsPlaying(false)
+          setIsLoading(false)
+          setError('Open Spotify on your computer or phone to play via Spotify Connect.')
+        }
+      } catch (err) {
+        logger.error('Spotify Connect fallback error:', err)
+        setIsLoading(false)
+      }
+    },
+    [applyRemoteState]
+  )
+
+  // Initialize Spotify Web Playback SDK (via OEM VMP Audio Host on desktop, with Connect fallback)
   useEffect(() => {
     if (!isAuthenticated) {
+      desktop?.audio?.stop?.().catch?.(() => {})
       playerRef.current?.disconnect?.()
       playerRef.current = null
+      sdkDeviceIdRef.current = null
+      sdkDisabledRef.current = false
+      lastPlayRequestRef.current = null
       setDeviceId(null)
       setSdkDeviceId(null)
       setPlaybackMode('none')
@@ -191,13 +241,36 @@ export function PlaybackProvider({ children }) {
     }
 
     let cancelled = false
+    let unsubAudio = null
+    let ownsInPagePlayer = false
+    sdkDisabledRef.current = false
+
+    const teardownLocalSdk = (reason, replayPending = false) => {
+      if (cancelled || sdkDisabledRef.current) return
+      sdkDisabledRef.current = true
+      const deadId = sdkDeviceIdRef.current
+      try {
+        playerRef.current?.disconnect?.()
+      } catch {
+        /* ignore disconnect error */
+      }
+      desktop?.audio?.stop?.().catch?.(() => {})
+      playerRef.current = null
+      sdkDeviceIdRef.current = null
+      setSdkDeviceId(null)
+      setDeviceId((prev) => (prev === deadId ? null : prev))
+      activateConnectFallback(reason, { replayPending, deadSdkId: deadId })
+    }
 
     const syncSdkState = (state) => {
-      if (!state || cancelled) return
+      if (!state || cancelled || sdkDisabledRef.current) return
       setIsPlaying(!state.paused)
       setCurrentProgress(state.position)
       setDuration(state.duration)
-      setCurrentTrack(formatTrack(state.track_window?.current_track))
+      const formatted = formatTrack(state.track_window?.current_track)
+      if (formatted) {
+        setCurrentTrack(formatted)
+      }
       setIsLoading(false)
 
       if (state.shuffle !== undefined) {
@@ -208,10 +281,157 @@ export function PlaybackProvider({ children }) {
       }
     }
 
+    const handleSdkReady = async (device_id) => {
+      if (!device_id || cancelled || sdkDisabledRef.current) return
+      logger.info('Spotify player ready with device ID:', device_id)
+      sdkDeviceIdRef.current = device_id
+      setSdkDeviceId(device_id)
+      setSdkFallbackReason(null)
+      setError(null)
+
+      // Never call transferPlaybackToDevice(..., play=false) here — doing so
+      // forcibly pauses active playback or hijacks a track already playing!
+      try {
+        const fresh = await getValidToken()
+        const remote = fresh ? await fetchRemotePlaybackState(fresh).catch(() => null) : null
+        if (cancelled || sdkDisabledRef.current) return
+
+        if (remote?.is_playing && remote?.device?.id && remote.device.id !== device_id) {
+          setPlaybackMode('connect')
+          applyRemoteState(remote)
+        } else {
+          setDeviceId(device_id)
+          setActiveDeviceName('PixelPod (This Computer)')
+          setPlaybackMode('sdk')
+          setIsReady(true)
+        }
+      } catch {
+        if (!cancelled && !sdkDisabledRef.current) {
+          setDeviceId(device_id)
+          setActiveDeviceName('PixelPod (This Computer)')
+          setPlaybackMode('sdk')
+          setIsReady(true)
+        }
+      }
+
+      refreshDevices()
+    }
+
+    const handleSdkError = async (kind, message) => {
+      if (cancelled || sdkDisabledRef.current) return
+
+      if (kind === 'initialization_error') {
+        logger.error('SDK initialization error:', message)
+        teardownLocalSdk(
+          'Built-in audio engine unavailable (Widevine EME). Using Spotify Connect.',
+          true
+        )
+        return
+      }
+
+      if (kind === 'authentication_error') {
+        logger.error('SDK authentication error:', message)
+        setError(`Authentication error: ${message}`)
+        return
+      }
+
+      if (kind === 'account_error') {
+        logger.error('SDK account error:', message)
+        setError('Spotify Premium is required for on-demand playback.')
+        return
+      }
+
+      logger.error('SDK playback error:', message)
+      setIsPlaying(false)
+      setIsLoading(false)
+
+      try {
+        await playerRef.current?.pause?.()
+      } catch {
+        /* ignore */
+      }
+
+      try {
+        const freshToken = await getValidToken()
+        const rawDevices = freshToken
+          ? await fetchAvailableDevices(freshToken).catch(() => [])
+          : []
+        const externalDevices = rawDevices.filter(
+          (d) => d.id && d.id !== sdkDeviceIdRef.current
+        )
+        if (externalDevices.length > 0) {
+          teardownLocalSdk(
+            `Local audio stream unavailable (${message || 'DRM'}). Switched to Spotify Connect.`,
+            true
+          )
+          return
+        }
+      } catch {
+        /* keep local player ready */
+      }
+
+      setError(`Playback error: ${message || 'Could not play this track.'}`)
+    }
+
+    const initDesktopAudioHost = async () => {
+      if (!desktop?.audio?.start) return false
+
+      const hostProxy = {
+        activateElement: () => {},
+        pause: () => desktop.audio.command('pause'),
+        resume: () => desktop.audio.command('resume'),
+        nextTrack: () => desktop.audio.command('nextTrack'),
+        previousTrack: () => desktop.audio.command('previousTrack'),
+        seek: (pos) => desktop.audio.command('seek', pos),
+        setVolume: (vol) => desktop.audio.command('setVolume', vol),
+        getCurrentState: () => desktop.audio.command('getState').catch(() => null),
+        disconnect: () => {}
+      }
+
+      playerRef.current = hostProxy
+
+      unsubAudio = onDesktopEvent('audio', 'onEvent', (ev) => {
+        if (cancelled || sdkDisabledRef.current || !ev) return
+        if (ev.type === 'ready') {
+          handleSdkReady(ev.deviceId)
+        } else if (ev.type === 'not_ready') {
+          setIsReady(false)
+        } else if (ev.type === 'state') {
+          syncSdkState(ev.state)
+        } else if (ev.type === 'error') {
+          handleSdkError(ev.kind, ev.message)
+        } else if (ev.type === 'closed') {
+          setIsReady(false)
+        }
+      })
+
+      try {
+        const res = await desktop.audio.start()
+        if (cancelled) return true
+        if (res?.available && res.deviceId) {
+          await handleSdkReady(res.deviceId)
+          if (res.state) syncSdkState(res.state)
+          return true
+        }
+      } catch (err) {
+        logger.warn('Desktop audio host unavailable, falling back:', err)
+      }
+
+      unsubAudio?.()
+      unsubAudio = null
+      playerRef.current = null
+      return false
+    }
+
     const init = async () => {
       const token = await getValidToken()
       if (!token || cancelled) return
 
+      // Primary path on Desktop: OEM-VMP-certified native browser audio engine
+      const startedHost = await initDesktopAudioHost()
+      if (startedHost || cancelled) return
+
+      // Secondary path (web browser dev mode or system without Edge/Chrome/Brave)
       let Spotify
       try {
         Spotify = await loadSpotifySdk()
@@ -233,65 +453,32 @@ export function PlaybackProvider({ children }) {
           volume: 0.5
         })
 
+        ownsInPagePlayer = true
         playerRef.current = player
 
         player.addListener('player_state_changed', syncSdkState)
-
-        player.addListener('ready', ({ device_id }) => {
-          if (cancelled) return
-          logger.info('Spotify player ready with device ID:', device_id)
-          setSdkDeviceId(device_id)
-          setDeviceId(device_id)
-          setActiveDeviceName('PixelPod (This Computer)')
-          setPlaybackMode('sdk')
-          setSdkFallbackReason(null)
-          setIsReady(true)
-          setError(null)
-
-          getValidToken().then((fresh) => {
-            if (fresh && !cancelled) {
-              transferPlaybackToDevice(device_id, fresh, false).catch((err) => {
-                logger.warn('Initial device transfer skipped:', err)
-              })
-            }
-          })
-          refreshDevices()
-        })
-
+        player.addListener('ready', ({ device_id }) => handleSdkReady(device_id))
         player.addListener('not_ready', ({ device_id }) => {
-          if (cancelled) return
+          if (cancelled || sdkDisabledRef.current) return
           logger.warn('SDK device went offline:', device_id)
           setIsReady(false)
         })
-
-        player.addListener('initialization_error', (e) => {
-          if (cancelled) return
-          logger.error('SDK initialization error:', e)
-          activateConnectFallback('Built-in audio engine unavailable (Widevine EME). Using Spotify Connect.')
-        })
-
-        player.addListener('authentication_error', (e) => {
-          if (cancelled) return
-          logger.error('SDK authentication error:', e)
-          setError(`Authentication error: ${e.message}`)
-        })
-
-        player.addListener('account_error', (e) => {
-          if (cancelled) return
-          logger.error('SDK account error:', e)
-          setError('Spotify Premium is required for on-demand playback.')
-        })
-
-        player.addListener('playback_error', (e) => {
-          if (cancelled) return
-          logger.error('SDK playback error:', e)
-          setError(`Playback error: ${e.message}`)
-          setIsLoading(false)
-        })
+        player.addListener('initialization_error', (e) =>
+          handleSdkError('initialization_error', e?.message)
+        )
+        player.addListener('authentication_error', (e) =>
+          handleSdkError('authentication_error', e?.message)
+        )
+        player.addListener('account_error', (e) =>
+          handleSdkError('account_error', e?.message)
+        )
+        player.addListener('playback_error', (e) =>
+          handleSdkError('playback_error', e?.message)
+        )
 
         const connected = await player.connect()
         if (!connected && !cancelled) {
-          await activateConnectFallback('Could not register local player. Using Spotify Connect.')
+          teardownLocalSdk('Could not register local player. Using Spotify Connect.', false)
         }
       } catch (err) {
         if (!cancelled) {
@@ -305,17 +492,20 @@ export function PlaybackProvider({ children }) {
 
     return () => {
       cancelled = true
-      playerRef.current?.disconnect?.()
+      unsubAudio?.()
+      if (ownsInPagePlayer) {
+        playerRef.current?.disconnect?.()
+      }
       playerRef.current = null
     }
-  }, [isAuthenticated, activateConnectFallback, refreshDevices])
+  }, [isAuthenticated, activateConnectFallback, applyRemoteState, refreshDevices])
 
-  // Progress ticker — ONLY runs when playing (fixes idle CPU polling bug)
+  // Progress ticker — ONLY runs when playing
   useEffect(() => {
     if (!isAuthenticated || !isPlaying) return
 
     const tick = setInterval(() => {
-      if (playbackMode === 'sdk' && playerRef.current) {
+      if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
         playerRef.current.getCurrentState().then((state) => {
           if (state && !state.paused) {
             setCurrentProgress(state.position)
@@ -340,8 +530,9 @@ export function PlaybackProvider({ children }) {
       if (!token || !active) return
       try {
         const state = await fetchRemotePlaybackState(token)
+        const ignoredId = sdkDisabledRef.current ? sdkDeviceIdRef.current : null
         if (active && state) {
-          applyRemoteState(state)
+          applyRemoteState(state, ignoredId)
         }
       } catch (err) {
         logger.warn('Connect poll failed:', err)
@@ -371,6 +562,8 @@ export function PlaybackProvider({ children }) {
   // Select any Spotify Connect device (or switch back to PixelPod's local SDK device)
   const selectDevice = useCallback(async (targetDeviceId, playImmediately = isPlaying) => {
     if (!targetDeviceId) return
+    playerRef.current?.activateElement?.()
+
     const token = await getValidToken()
     if (!token) {
       setError('Not authenticated')
@@ -380,7 +573,7 @@ export function PlaybackProvider({ children }) {
     try {
       await transferPlaybackToDevice(targetDeviceId, token, playImmediately)
       setDeviceId(targetDeviceId)
-      const isLocal = Boolean(sdkDeviceId && targetDeviceId === sdkDeviceId)
+      const isLocal = Boolean(!sdkDisabledRef.current && sdkDeviceId && targetDeviceId === sdkDeviceId)
       setPlaybackMode(isLocal ? 'sdk' : 'connect')
       const matched = devices.find((d) => d.id === targetDeviceId)
       setActiveDeviceName(isLocal ? 'PixelPod (This Computer)' : matched?.name || 'Spotify Device')
@@ -392,69 +585,121 @@ export function PlaybackProvider({ children }) {
     }
   }, [devices, isPlaying, sdkDeviceId])
 
-  const resolveActiveDevice = useCallback(async (token) => {
-    if (deviceId) return deviceId
-    const list = await fetchAvailableDevices(token).catch(() => [])
-    setDevices(list)
-    const candidate = list.find((d) => d.is_active) || list[0]
-    if (candidate) {
-      setDeviceId(candidate.id)
-      setActiveDeviceName(candidate.name)
-      setPlaybackMode(sdkDeviceId && candidate.id === sdkDeviceId ? 'sdk' : 'connect')
-      setIsReady(true)
-      return candidate.id
-    }
-    return null
-  }, [deviceId, sdkDeviceId])
+  const resolveActiveDevice = useCallback(
+    async (token, forceRefreshList = false) => {
+      if (deviceId && !forceRefreshList) return deviceId
+      if (!sdkDisabledRef.current && sdkDeviceId && !forceRefreshList) {
+        setDeviceId(sdkDeviceId)
+        setActiveDeviceName('PixelPod (This Computer)')
+        setPlaybackMode('sdk')
+        setIsReady(true)
+        return sdkDeviceId
+      }
 
-  const play = useCallback(async (trackUri, contextUri = null, offset = 0, trackUris = null, positionMs = null) => {
-    if (!trackUri && !contextUri && (!trackUris || trackUris.length === 0)) {
-      setError('No track or context URI provided')
-      return
-    }
+      const rawList = await fetchAvailableDevices(token).catch(() => [])
+      const list = sdkDisabledRef.current
+        ? rawList.filter((d) => d.id !== sdkDeviceIdRef.current)
+        : rawList
+      setDevices(list)
 
-    setIsLoading(true)
+      const candidate =
+        list.find((d) => d.is_active) ||
+        (!sdkDisabledRef.current && sdkDeviceId ? list.find((d) => d.id === sdkDeviceId) : null) ||
+        list[0]
 
-    try {
-      const token = await getValidToken()
-      if (!token) {
-        setError('Not authenticated')
-        setIsLoading(false)
+      if (candidate) {
+        const isLocal = Boolean(!sdkDisabledRef.current && sdkDeviceId && candidate.id === sdkDeviceId)
+        setDeviceId(candidate.id)
+        setActiveDeviceName(isLocal ? 'PixelPod (This Computer)' : candidate.name)
+        setPlaybackMode(isLocal ? 'sdk' : 'connect')
+        setIsReady(true)
+        return candidate.id
+      }
+      return null
+    },
+    [deviceId, sdkDeviceId]
+  )
+
+  const play = useCallback(
+    async (trackUri, contextUri = null, offset = 0, trackUris = null, positionMs = null) => {
+      if (!trackUri && !contextUri && (!trackUris || trackUris.length === 0)) {
+        setError('No track or context URI provided')
         return
       }
 
-      const targetDevice = await resolveActiveDevice(token)
-      if (!targetDevice) {
-        setError('No playback device available. Open Spotify on any device or wait for PixelPod to connect.')
-        setIsLoading(false)
-        return
-      }
+      // Unlock Chromium user-gesture audio playback before any async boundary
+      playerRef.current?.activateElement?.()
+      setIsLoading(true)
 
-      await startPlaybackSession({
-        token,
-        deviceId: targetDevice,
+      const sessionParams = {
         trackUri: contextUri ? undefined : trackUri,
         trackUris: contextUri ? undefined : trackUris,
         contextUri,
         offset,
         positionMs
-      })
+      }
+      lastPlayRequestRef.current = { at: Date.now(), params: sessionParams }
 
-      setError(null)
-      setIsPlaying(true)
-      if (playbackMode === 'connect') {
+      try {
+        const token = await getValidToken()
+        if (!token) {
+          setError('Not authenticated')
+          setIsLoading(false)
+          return
+        }
+
+        let targetDevice = await resolveActiveDevice(token, false)
+        if (!targetDevice) {
+          setError(
+            'No playback device available. Open Spotify on any device or wait a moment for PixelPod to connect.'
+          )
+          setIsLoading(false)
+          return
+        }
+
+        try {
+          await startPlaybackSession({
+            token,
+            deviceId: targetDevice,
+            ...sessionParams
+          })
+        } catch (firstErr) {
+          // Handle stale device ID or brief SDK registration propagation delay
+          const msg = String(firstErr?.message || '')
+          if (msg.includes('404') || msg.toLowerCase().includes('device')) {
+            const refreshedDevice = await resolveActiveDevice(token, true)
+            if (refreshedDevice && refreshedDevice !== targetDevice) {
+              targetDevice = refreshedDevice
+              await startPlaybackSession({
+                token,
+                deviceId: targetDevice,
+                ...sessionParams
+              })
+            } else {
+              throw firstErr
+            }
+          } else {
+            throw firstErr
+          }
+        }
+
+        setError(null)
+        setIsPlaying(true)
+        if (playbackMode === 'connect') {
+          setIsLoading(false)
+        }
+      } catch (err) {
+        logger.error('Playback error:', err)
+        setError(
+          err.message.includes('Premium') || err.message.includes('PREMIUM_REQUIRED')
+            ? 'Spotify Premium is required to start playback.'
+            : `Playback error: ${err.message}`
+        )
         setIsLoading(false)
       }
-    } catch (err) {
-      logger.error('Playback error:', err)
-      setError(
-        err.message.includes('Premium') || err.message.includes('PREMIUM_REQUIRED')
-          ? 'Spotify Premium is required to start playback.'
-          : `Playback error: ${err.message}`
-      )
-      setIsLoading(false)
-    }
-  }, [resolveActiveDevice, playbackMode])
+    },
+    [resolveActiveDevice, playbackMode]
+  )
 
   const pause = useCallback(async () => {
     if (!deviceId) {
@@ -463,6 +708,13 @@ export function PlaybackProvider({ children }) {
     }
 
     try {
+      if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
+        await playerRef.current.pause()
+        setIsPlaying(false)
+        setError(null)
+        return
+      }
+
       const token = await getValidToken()
       if (!token) {
         setError('Not authenticated')
@@ -473,11 +725,6 @@ export function PlaybackProvider({ children }) {
       setIsPlaying(false)
       setError(null)
     } catch (err) {
-      if (playbackMode === 'sdk' && playerRef.current) {
-        await playerRef.current.pause()
-        setIsPlaying(false)
-        return
-      }
       setError(`Pause error: ${err.message}`)
     }
   }, [deviceId, playbackMode])
@@ -488,7 +735,16 @@ export function PlaybackProvider({ children }) {
       return
     }
 
+    playerRef.current?.activateElement?.()
+
     try {
+      if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
+        await playerRef.current.resume()
+        setIsPlaying(true)
+        setError(null)
+        return
+      }
+
       const token = await getValidToken()
       if (!token) {
         setError('Not authenticated')
@@ -499,26 +755,39 @@ export function PlaybackProvider({ children }) {
       setIsPlaying(true)
       setError(null)
     } catch (err) {
-      if (playbackMode === 'sdk' && playerRef.current) {
-        await playerRef.current.resume()
-        setIsPlaying(true)
-        return
-      }
       setError(`Resume error: ${err.message}`)
     }
   }, [deviceId, playbackMode])
 
-  // Symmetric play/pause toggle (fixes Audit Bug #4)
-  const togglePlayPause = useCallback(async () => {
-    if (isPlaying) {
-      await pause()
-    } else {
+  const togglePlayPause = useCallback(
+    async (fallbackTrackUri = null) => {
+      if (isPlaying) {
+        await pause()
+        return
+      }
+
+      const candidateUri =
+        typeof fallbackTrackUri === 'string' ? fallbackTrackUri : currentTrack?.uri || null
+
+      // If no active stream is loaded in the player yet (duration === 0 or no device),
+      // start a fresh playback session instead of calling empty /resume.
+      if ((!currentTrack || duration === 0 || !deviceId) && lastPlayRequestRef.current?.params) {
+        const p = lastPlayRequestRef.current.params
+        await play(p.trackUri, p.contextUri, p.offset, p.trackUris, p.positionMs)
+        return
+      }
+      if ((!currentTrack || duration === 0 || !deviceId) && candidateUri) {
+        await play(candidateUri)
+        return
+      }
+
       await resume()
-    }
-  }, [isPlaying, pause, resume])
+    },
+    [isPlaying, pause, resume, play, currentTrack, duration, deviceId]
+  )
 
   const next = useCallback(async () => {
-    if (playbackMode === 'sdk' && playerRef.current) {
+    if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
       await playerRef.current.nextTrack()
       return
     }
@@ -532,7 +801,7 @@ export function PlaybackProvider({ children }) {
   }, [playbackMode, deviceId])
 
   const previous = useCallback(async () => {
-    if (playbackMode === 'sdk' && playerRef.current) {
+    if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
       await playerRef.current.previousTrack()
       return
     }
@@ -549,7 +818,7 @@ export function PlaybackProvider({ children }) {
     const clamped = Math.max(0, Math.round(position))
     setCurrentProgress(clamped)
 
-    if (playbackMode === 'sdk' && playerRef.current) {
+    if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
       await playerRef.current.seek(clamped)
       return
     }
@@ -637,8 +906,9 @@ export function PlaybackProvider({ children }) {
     setVolumeState(clampedVolume)
 
     try {
-      if (playbackMode === 'sdk' && playerRef.current) {
+      if (playbackMode === 'sdk' && playerRef.current && !sdkDisabledRef.current) {
         await playerRef.current.setVolume(clampedVolume / 100)
+        return
       }
 
       const token = await getValidToken()
@@ -673,7 +943,7 @@ export function PlaybackProvider({ children }) {
     if (!uri) return false
     const token = await getValidToken()
     if (!token) throw new Error('Not authenticated')
-    const targetDevice = await resolveActiveDevice(token)
+    const targetDevice = await resolveActiveDevice(token, false)
     await addTrackToRemoteQueue({ token, deviceId: targetDevice, trackUri: uri })
     refreshRemoteQueue()
     return true

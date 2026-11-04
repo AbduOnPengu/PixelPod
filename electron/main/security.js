@@ -6,7 +6,12 @@ export const APP_SCHEME = 'app'
 export const APP_HOST = 'pixelpod'
 export const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`
 
-const ALLOWED_PERMISSIONS = new Set(['mediaKeySystem', 'clipboard-sanitized-write', 'fullscreen'])
+const ALLOWED_PERMISSIONS = new Set([
+  'mediaKeySystem',
+  'protected-media-identifier',
+  'clipboard-sanitized-write',
+  'fullscreen'
+])
 
 /** True if `url` belongs to the PixelPod renderer (packaged protocol or dev server). */
 export function isAppUrl(url, devServerUrl) {

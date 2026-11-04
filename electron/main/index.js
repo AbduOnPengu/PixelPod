@@ -8,8 +8,9 @@ import { createTokenStore } from './tokenStore.js'
 import { createAuthService, DEFAULT_OAUTH_PORT } from './auth.js'
 import { APP_ORIGIN, registerAppScheme, serveDist, hardenSession, isAppUrl, isSafeExternalUrl } from './security.js'
 import { loadWindowState, trackWindowState, MIN_SIZE } from './windowState.js'
-import { guardHandler, sanitizePlayerState, isPlayerCommand } from './ipcValidation.js'
+import { guardHandler, sanitizePlayerState, isPlayerCommand, isAudioCommand } from './ipcValidation.js'
 import { createDesktopIntegration } from './desktop.js'
+import { createAudioHost } from './audioHost.js'
 
 const { app, BrowserWindow, ipcMain, protocol, net, shell, safeStorage, screen, session, nativeTheme } = electron
 
@@ -24,6 +25,8 @@ const IS_SMOKE_TEST = process.argv.includes('--smoke-test')
 // ── Pre-ready setup ──────────────────────────────────────────────────────────
 app.setName('PixelPod')
 if (process.platform === 'win32') app.setAppUserModelId('com.pixelpod.app')
+// Allow Spotify Web Playback SDK's cross-origin iframe to start audio after async Web API calls
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -68,6 +71,12 @@ const auth = createAuthService({
   onChange: (status) => send(EVENT_CHANNELS.AUTH_CHANGED, { ...status, clientIdSource: clientIdSource() })
 })
 
+const audioHost = createAudioHost({
+  userDataDir: userData,
+  getAccessToken: (options) => auth.getAccessToken(options),
+  onEvent: (payload) => send(EVENT_CHANNELS.AUDIO_EVENT, payload)
+})
+
 const clientIdSource = () => (envClientId() ? 'env' : prefs.get('clientId') ? 'settings' : null)
 
 const showWindow = () => {
@@ -110,10 +119,22 @@ function registerIpc() {
   handle(INVOKE_CHANNELS.AUTH_STATUS, () => ({ ...auth.status(), clientIdSource: clientIdSource() }))
   handle(INVOKE_CHANNELS.AUTH_LOGIN, async () => ({ ...(await auth.login()), clientIdSource: clientIdSource() }))
   handle(INVOKE_CHANNELS.AUTH_CANCEL, () => auth.cancelLogin())
-  handle(INVOKE_CHANNELS.AUTH_LOGOUT, () => auth.logout())
+  handle(INVOKE_CHANNELS.AUTH_LOGOUT, () => {
+    audioHost.stop()
+    return auth.logout()
+  })
   handle(INVOKE_CHANNELS.AUTH_TOKEN, (options) =>
     auth.getAccessToken({ forceRefresh: options?.forceRefresh === true })
   )
+
+  handle(INVOKE_CHANNELS.AUDIO_START, () => audioHost.start())
+  handle(INVOKE_CHANNELS.AUDIO_STOP, () => audioHost.stop())
+  handle(INVOKE_CHANNELS.AUDIO_COMMAND, (action, value) => {
+    if (!isAudioCommand(action)) {
+      throw Object.assign(new Error('Invalid audio command'), { code: 'INVALID_COMMAND' })
+    }
+    return audioHost.command(action, value)
+  })
 
   handle(INVOKE_CHANNELS.PREFS_GET_ALL, () => prefs.getAll())
   handle(INVOKE_CHANNELS.PREFS_SET, (key, value) => prefs.set(key, value))
@@ -125,7 +146,8 @@ function registerIpc() {
     isPackaged: app.isPackaged,
     electron: process.versions.electron,
     chrome: process.versions.chrome,
-    widevine: Boolean(electron.components),
+    widevine: Boolean(electron.components || audioHost.browserInfo()),
+    audioEngine: audioHost.browserInfo()?.name || null,
     tokenEncryption: tokenStore.isPersistent(),
     redirectUri: auth.redirectUri
   }))
@@ -212,19 +234,31 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(async () => {
-  // castLabs ECS: wait briefly for Widevine CDM, never blocking window startup if offline.
+  // If no OEM browser audio host is installed, wait boundedly for castLabs Widevine CDM;
+  // otherwise kick it off in the background so window startup is instantaneous.
   if (electron.components?.whenReady && !IS_SMOKE_TEST) {
-    try {
-      await Promise.race([
-        electron.components.whenReady(),
-        new Promise((resolve) => setTimeout(resolve, 4000))
-      ])
-    } catch (error) {
-      console.error('[pixelpod] Widevine component failed to load', error)
+    if (audioHost.browserInfo()) {
+      electron.components.whenReady().catch(() => {})
+    } else {
+      try {
+        await Promise.race([
+          electron.components.whenReady(),
+          new Promise((resolve) => setTimeout(resolve, 15000))
+        ])
+      } catch (error) {
+        console.error('[pixelpod] Widevine component failed to load', error)
+      }
     }
   }
 
   nativeTheme.themeSource = 'dark'
+  // Present a standard Chromium desktop User-Agent so Spotify's SDK & Widevine license
+  // endpoints do not reject Electron-specific UA tokens.
+  const cleanUa = session.defaultSession
+    .getUserAgent()
+    .replace(/\s+(?:Electron|PixelPod)\/[^\s]+/gi, '')
+  session.defaultSession.setUserAgent(cleanUa)
+
   harden = hardenSession({ session: session.defaultSession, shell, devServerUrl: DEV_SERVER_URL })
   if (!DEV_SERVER_URL) serveDist({ protocol, net, fs, distDir: DIST_DIR })
 
@@ -275,6 +309,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  audioHost.stop()
 })
 
 app.on('window-all-closed', () => {
@@ -282,6 +317,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  audioHost.stop()
   desktop.dispose()
   auth.dispose()
+})
+
+process.on('exit', () => {
+  audioHost.stop()
 })

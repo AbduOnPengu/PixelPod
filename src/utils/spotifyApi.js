@@ -185,7 +185,8 @@ export function formatTrack(track, fallbackAlbum = null) {
     albumArt: albumObj?.images?.[0]?.url || null,
     albumArtSmall: albumObj?.images?.[2]?.url || albumObj?.images?.[0]?.url || null,
     duration: actualTrack.duration_ms ?? 0,
-    previewUrl: actualTrack.preview_url
+    previewUrl: actualTrack.preview_url,
+    ...(actualTrack.linked_from?.uri ? { linkedFromUri: actualTrack.linked_from.uri } : {})
   }
 }
 

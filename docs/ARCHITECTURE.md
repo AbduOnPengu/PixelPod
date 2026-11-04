@@ -125,24 +125,18 @@ libsecret/kwallet on Linux) and written to `userData/tokens.bin`. If OS encrypti
 is unavailable, tokens are kept in memory only (user logs in each launch) — never
 written in plain text.
 
-### D4 — Playback: Web Playback SDK with Widevine, plus Spotify Connect fallback
-The Web Playback SDK requires the **Widevine CDM** (EME). Stock Electron does not
-ship Widevine, so the SDK fails with `initialization_error` / EME errors.
+### D4 — Playback: OEM VMP Browser Audio Host + Web Playback SDK + Spotify Connect fallback
+The Web Playback SDK requires both **Widevine CDM** (EME) and an **OEM-production Verified Media Path (VMP)** signature. Spotify's `/v1/widevine-license/v1/audio/license` endpoint rejects castLabs' development VMP signature after the ~1.5-second unencrypted track lead-in.
 
-- **Primary**: build on castLabs *Electron for Content Security* (ECS), a drop-in
-  Electron distribution with Widevine. PixelPod registers as a Spotify Connect device
-  named "PixelPod".
+- **Primary (Desktop)**: `electron/main/audioHost.js` hosts Spotify's official `https://sdk.scdn.co/spotify-player.js` inside an invisible, isolated `--headless=new` worker of an installed OEM-certified Chromium browser (Microsoft Edge on Windows, or Google Chrome / Brave across platforms) connected over a per-session secret-authenticated `127.0.0.1` loopback channel, with SMTC disabled in the worker so Electron exclusively owns OS media keys and tray controls.
+- **Secondary / Web**: in-window Web Playback SDK via castLabs ECS when running in a browser or without a host binary.
 - **Fallback (always available, supported by Spotify)**: **Connect remote mode** —
-  if the SDK cannot initialise, PixelPod controls an existing Spotify device
+  if no local SDK device can initialise, PixelPod controls an existing Spotify device
   (desktop app, phone, speaker) via the Web API (`/me/player/*`), polling
   `GET /me/player` for state. The UI explicitly shows which device is playing and
   offers a device picker. No fake playback.
 
 Both modes require Spotify Premium for playback control (Spotify restriction).
-
-> Production distribution with ECS additionally requires VMP signing through
-> castLabs EVS (free account). This is documented in `SETUP.md`; development builds
-> work without it.
 
 ### D5 — One playback state
 `PlaybackContext` remains the single source of truth. All controls go through the

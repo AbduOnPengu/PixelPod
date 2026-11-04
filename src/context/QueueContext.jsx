@@ -61,11 +61,11 @@ export function QueueProvider({ children }) {
     [togglePlayPause, handleSkipForward, handleSkipBack]
   )
 
-  // Sync OS MediaSession metadata & hardware media-key handlers
+  // Sync OS MediaSession metadata ONLY when track identity changes (avoids 1s SMTC artwork resets)
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
-
     const session = navigator.mediaSession
+
     if (currentTrack && typeof window.MediaMetadata === 'function') {
       const artwork = []
       if (currentTrack.albumArtSmall) {
@@ -84,6 +84,19 @@ export function QueueProvider({ children }) {
     } else {
       session.metadata = null
     }
+  }, [
+    currentTrack?.id,
+    currentTrack?.title,
+    currentTrack?.artist,
+    currentTrack?.album,
+    currentTrack?.albumArt,
+    currentTrack?.albumArtSmall
+  ])
+
+  // Sync OS MediaSession playbackState when play/pause or duration changes
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+    const session = navigator.mediaSession
 
     session.playbackState = isPlaying ? 'playing' : currentTrack ? 'paused' : 'none'
 
@@ -91,14 +104,16 @@ export function QueueProvider({ children }) {
       if (duration > 0 && typeof session.setPositionState === 'function') {
         session.setPositionState({
           duration: duration / 1000,
-          playbackRate: 1,
+          playbackRate: isPlaying ? 1 : 0,
           position: Math.min(duration, Math.max(0, currentProgress)) / 1000
         })
       }
     } catch {
       /* ignore transient position range errors */
     }
-  }, [currentTrack, isPlaying, duration, currentProgress])
+    // Intentionally omit 1s currentProgress ticks; OS interpolates from playbackRate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ Boolean(currentTrack), isPlaying, duration ])
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
@@ -139,4 +154,3 @@ export function useQueue() {
   }
   return ctx
 }
-

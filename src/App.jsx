@@ -4,6 +4,7 @@ import { useSpotify } from '@/context/SpotifyContext'
 import { usePlayback } from '@/context/PlaybackContext'
 import { useQueue } from '@/context/QueueContext'
 import { usePreferences } from '@/context/PreferencesContext'
+import { useToast } from '@/context/ToastContext'
 import { onDesktopEvent } from '@/desktop/bridge'
 import TitleBar from '@/components/shell/TitleBar'
 import Sidebar from '@/components/shell/Sidebar'
@@ -35,6 +36,7 @@ export default function App() {
   } = useSpotify()
   const {
     volume,
+    error: playbackError,
     togglePlayPause,
     cycleRepeatMode,
     setVolume
@@ -48,6 +50,7 @@ export default function App() {
     resetQueue
   } = useQueue()
   const { prefs, setPref } = usePreferences()
+  const { showToast } = useToast()
 
   const initialRoute = prefs.uiMode === 'classic' ? 'classic' : 'home'
   const [history, setHistory] = useState([initialRoute])
@@ -94,6 +97,16 @@ export default function App() {
     fetchLikedSongs,
     fetchHomeDiscovery
   ])
+
+  // Surface playback errors immediately via Toast so failures are never silent
+  useEffect(() => {
+    if (!isAuthenticated || !playbackError) return
+    showToast({
+      title: 'Playback notice',
+      description: playbackError,
+      tone: 'error'
+    })
+  }, [isAuthenticated, playbackError, showToast])
 
   // Menu & Tray navigation events from Electron main process
   useEffect(
@@ -147,7 +160,7 @@ export default function App() {
 
       if (event.key === ' ') {
         event.preventDefault()
-        if (currentTrack) togglePlayPause()
+        if (currentTrack) togglePlayPause(currentTrack.uri)
       } else if (mod && event.key === 'ArrowRight') {
         event.preventDefault()
         handleSkipForward()

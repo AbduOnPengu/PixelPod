@@ -1,5 +1,9 @@
 const SPOTIFY_PLAYER_API = 'https://api.spotify.com/v1/me/player'
-const MAX_URI_BATCH = 200
+const MAX_URI_BATCH = 80
+
+const isPlayableSpotifyUri = (uri) =>
+  typeof uri === 'string' &&
+  (uri.startsWith('spotify:track:') || uri.startsWith('spotify:episode:'))
 
 async function sendPlaybackRequest(path, { token, method = 'PUT', body } = {}) {
   const response = await fetch(`${SPOTIFY_PLAYER_API}${path}`, {
@@ -44,7 +48,12 @@ export function startPlaybackSession({
   offset = 0,
   positionMs
 }) {
-  const boundedUris = trackUris?.length ? trackUris.slice(0, MAX_URI_BATCH) : [trackUri]
+  const rawUris = trackUris?.length ? trackUris : [trackUri]
+  const cleanUris = rawUris.filter(isPlayableSpotifyUri)
+  const boundedUris = (cleanUris.length > 0 ? cleanUris : rawUris.filter(Boolean)).slice(
+    0,
+    MAX_URI_BATCH
+  )
   const requestBody = contextUri
     ? {
         context_uri: contextUri,

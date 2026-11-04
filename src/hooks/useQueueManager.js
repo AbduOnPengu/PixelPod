@@ -31,7 +31,10 @@ export default function useQueueManager({
     }
 
     const matchedIndex = currentTrackList.findIndex(
-      (track) => track?.id === playbackTrack.id || track?.uri === playbackTrack.uri
+      (track) =>
+        track?.id === playbackTrack.id ||
+        track?.uri === playbackTrack.uri ||
+        (playbackTrack.linkedFromUri && track?.uri === playbackTrack.linkedFromUri)
     )
 
     if (matchedIndex >= 0) {
@@ -74,8 +77,18 @@ export default function useQueueManager({
     return shuffledTracks
   }, [])
 
+  const isStreamableTrack = useCallback(
+    (track) =>
+      Boolean(
+        track?.uri &&
+          !track.isLocal &&
+          !String(track.uri).startsWith('spotify:local:')
+      ),
+    []
+  )
+
   const createLikedSongsQueue = useCallback((tracks, selectedTrackId, shouldShuffle) => {
-    const playableTracks = tracks.filter((track) => track?.uri)
+    const playableTracks = tracks.filter(isStreamableTrack)
     const selectedTrackIndex = playableTracks.findIndex((track) => track.id === selectedTrackId)
     const safeSelectedTrackIndex = selectedTrackIndex >= 0 ? selectedTrackIndex : 0
     const linearQueue = createLinearQueue(playableTracks, safeSelectedTrackIndex)
@@ -86,7 +99,7 @@ export default function useQueueManager({
 
     const [selectedTrack, ...remainingTracks] = linearQueue
     return [selectedTrack, ...shuffleTracks(remainingTracks)]
-  }, [createLinearQueue, shuffleTracks])
+  }, [createLinearQueue, isStreamableTrack, shuffleTracks])
 
   const applyTrackSelection = useCallback((tracks, selectedTrackIndex, playbackSource) => {
     const selectedTrack = tracks[selectedTrackIndex]
@@ -107,7 +120,7 @@ export default function useQueueManager({
    */
   const playCollection = useCallback(
     async ({ tracks = [], startIndex = 0, contextUri = null, sourceLabel = null, shuffle = false }) => {
-      const playable = tracks.filter((t) => t?.uri)
+      const playable = tracks.filter(isStreamableTrack)
       if (playable.length === 0) return
 
       const clampedIndex = Math.max(0, Math.min(playable.length - 1, startIndex))
@@ -154,6 +167,7 @@ export default function useQueueManager({
     [
       applyTrackSelection,
       createLikedSongsQueue,
+      isStreamableTrack,
       play,
       queueShuffleEnabled,
       shuffleEnabled,

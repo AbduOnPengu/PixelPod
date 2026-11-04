@@ -1,21 +1,17 @@
-/* eslint-env node */
 /**
- * Optional castLabs EVS VMP signing for electron-builder.
+ * Optional Widevine VMP signing hook for electron-builder.
  *
- * Widevine "Verified Media Path" signing is required by some DRM providers for
- * production builds. Skipped unless PIXELPOD_VMP_SIGN=1 and the castLabs EVS
- * CLI is installed and logged in:
- *
- *   python -m pip install --upgrade castlabs-evs
- *   python -m castlabs_evs.account signup   # or: reauth
- *
- * castLabs requires macOS packages to be VMP-signed BEFORE code signing
- * (afterPack) and Windows packages AFTER code signing (afterSign).
+ * When PIXELPOD_VMP_SIGN=1 is set, signs the packaged bundle with the
+ * developer's castLabs EVS certificate (`castlabs_evs.vmp sign-pkg`).
+ * By default, PixelPod streams encrypted Spotify audio through its built-in
+ * OEM-certified system Chromium Audio Host (`electron/main/audioHost.js`),
+ * so no paid EVS signing account is required.
  */
 const { execFileSync } = require('node:child_process')
 
 function sign(context, phase) {
   if (process.env.PIXELPOD_VMP_SIGN !== '1') return
+
   const platform = context.electronPlatformName
   const wanted = platform === 'darwin' ? 'afterPack' : platform === 'win32' ? 'afterSign' : null
   if (phase !== wanted) return

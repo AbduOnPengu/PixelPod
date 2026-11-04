@@ -13,6 +13,9 @@ const INVOKE = {
   AUTH_CANCEL: 'auth:cancel',
   AUTH_LOGOUT: 'auth:logout',
   AUTH_TOKEN: 'auth:token',
+  AUDIO_START: 'audio:start',
+  AUDIO_STOP: 'audio:stop',
+  AUDIO_COMMAND: 'audio:command',
   PREFS_GET_ALL: 'prefs:getAll',
   PREFS_SET: 'prefs:set',
   APP_INFO: 'app:info',
@@ -21,6 +24,7 @@ const INVOKE = {
 const SEND = { PLAYER_STATE: 'player:state' }
 const EVENTS = {
   AUTH_CHANGED: 'auth:changed',
+  AUDIO_EVENT: 'audio:event',
   PREFS_CHANGED: 'prefs:changed',
   PLAYER_COMMAND: 'player:command',
   NAVIGATE: 'ui:navigate'
@@ -53,6 +57,12 @@ const api = {
     logout: () => invoke(INVOKE.AUTH_LOGOUT),
     getAccessToken: (options) => invoke(INVOKE.AUTH_TOKEN, { forceRefresh: Boolean(options && options.forceRefresh) }),
     onChanged: (callback) => subscribe(EVENTS.AUTH_CHANGED, callback)
+  },
+  audio: {
+    start: () => invoke(INVOKE.AUDIO_START),
+    stop: () => invoke(INVOKE.AUDIO_STOP),
+    command: (action, value) => invoke(INVOKE.AUDIO_COMMAND, String(action), value),
+    onEvent: (callback) => subscribe(EVENTS.AUDIO_EVENT, callback)
   },
   prefs: {
     getAll: () => invoke(INVOKE.PREFS_GET_ALL),

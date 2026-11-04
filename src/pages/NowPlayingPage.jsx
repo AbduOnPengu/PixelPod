@@ -230,7 +230,7 @@ export default function NowPlayingPage({ onOpenDevices, onSwitchClassic, onBrows
           <button
             type="button"
             className="pp-np-play-btn"
-            onClick={togglePlayPause}
+            onClick={() => togglePlayPause(currentTrack?.uri)}
             aria-label={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (

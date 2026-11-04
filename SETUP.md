@@ -82,9 +82,9 @@ npm start
 
 PixelPod supports two official Spotify playback paths seamlessly:
 
-1. **Built-in Desktop Player (Spotify Web Playback SDK + Widevine)**
-   - PixelPod uses **castLabs Electron for Content Security (`v44.10.1+wvcus`)**, which includes Widevine CDM support (`electron.components.whenReady()`).
-   - When EME/Widevine initializes cleanly, PixelPod registers itself as a native Spotify device named **`PixelPod Desktop`** and streams audio directly inside the app.
+1. **Built-in Desktop Player (Spotify Web Playback SDK + OEM VMP Audio Engine)**
+   - Spotify's Widevine license server strictly enforces production OEM Verified Media Path (VMP) signatures. On desktop, PixelPod automatically hosts Spotify's official Web Playback SDK inside an invisible, isolated headless system Chromium worker (Microsoft Edge on Windows, or Google Chrome / Brave) while keeping all UI, OS media keys, and encrypted token storage inside Electron.
+   - PixelPod registers itself as a native Spotify device named **`PixelPod`** and streams full-length tracks directly on your computer without requiring an external Spotify window.
 
 2. **Spotify Connect Mode (Automatic Fallback & Multi-Device Control)**
    - If Widevine EME cannot initialize on a system (for example, when running an unsigned binary on platforms enforcing Verified Media Path / VMP) — or whenever you prefer playing through external speakers, a phone, or the official Spotify client — PixelPod automatically switches to **Spotify Connect** mode.

@@ -15,10 +15,11 @@ import { getDefaultPrefs, isValidPref, sanitizePrefs } from '../shared/prefsSche
 import { buildCsp } from '../shared/csp.js'
 import { createPrefsStore } from '../main/prefsStore.js'
 import { createTokenStore } from '../main/tokenStore.js'
-import { sanitizePlayerState, guardHandler, isPlayerCommand } from '../main/ipcValidation.js'
+import { sanitizePlayerState, guardHandler, isPlayerCommand, isAudioCommand } from '../main/ipcValidation.js'
 import { loadWindowState, isVisibleOnSomeDisplay, MIN_SIZE, DEFAULT_BOUNDS } from '../main/windowState.js'
 import { resolveDistPath, isAppUrl, isSafeExternalUrl, APP_ORIGIN } from '../main/security.js'
 import { createPkcePair, buildAuthorizeUrl, base64url, createAuthService } from '../main/auth.js'
+import { findAudioBrowserBinary, createAudioHost } from '../main/audioHost.js'
 
 function createInMemoryServerHarness() {
   let activeHandler = null
@@ -210,6 +211,9 @@ describe('IPC Validation & Security Helpers', () => {
 
     expect(isPlayerCommand('playPause')).toBe(true)
     expect(isPlayerCommand('eval')).toBe(false)
+    expect(isAudioCommand('pause')).toBe(true)
+    expect(isAudioCommand('seek')).toBe(true)
+    expect(isAudioCommand('exec')).toBe(false)
   })
 
   it('prevents encoded path traversal in resolveDistPath and validates external URLs and CSP', () => {
@@ -462,5 +466,142 @@ describe('Main-Process PKCE Auth Broker', () => {
     auth.logout()
     expect(auth.status().authenticated).toBe(false)
     expect(await auth.getAccessToken()).toBeNull()
+  })
+})
+
+describe('OEM VMP Browser Audio Host', () => {
+  let tmpDir
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixelpod-audio-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('discovers installed Edge/Chrome binaries and enforces secret key + command roundtrips', async () => {
+    const found = findAudioBrowserBinary({
+      platform: 'win32',
+      env: { ProgramFiles: 'C:\\FakePF', 'ProgramFiles(x86)': 'C:\\FakePF86' },
+      existsSync: (p) => p.includes('msedge.exe')
+    })
+    expect(found).toEqual({
+      name: 'Microsoft Edge',
+      executablePath: path.join('C:\\FakePF86', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+    })
+
+    let requestHandler = null
+    const createServer = (handler) => {
+      requestHandler = handler
+      const srv = new EventEmitter()
+      srv.listen = (_port, _host, cb) => {
+        process.nextTick(cb)
+        return srv
+      }
+      srv.address = () => ({ port: 51999 })
+      srv.close = vi.fn()
+      return srv
+    }
+
+    const sseChunks = []
+    const events = []
+    let spawnedArgs = null
+    let childKilled = false
+
+    const spawnImpl = (_bin, args) => {
+      spawnedArgs = args
+      const proc = new EventEmitter()
+      proc.kill = () => {
+        childKilled = true
+      }
+
+      process.nextTick(() => {
+        const targetUrl = args.find((a) => a.startsWith('http://127.0.0.1:51999/player#'))
+        const secret = targetUrl.split('#')[1]
+
+        // 1. Reject unauthenticated API access
+        const forbiddenRes = { writeHead: vi.fn(() => forbiddenRes), end: vi.fn() }
+        requestHandler({ method: 'GET', url: '/api/token', headers: {} }, forbiddenRes)
+        expect(forbiddenRes.writeHead).toHaveBeenCalledWith(403)
+
+        // 2. Open SSE command stream with valid secret
+        const sseReq = new EventEmitter()
+        const sseRes = {
+          writeHead: vi.fn(),
+          write: (chunk) => {
+            sseChunks.push(chunk)
+            if (chunk.startsWith('data: ')) {
+              const cmd = JSON.parse(chunk.slice(6).trim())
+              if (cmd.id) {
+                const postReq = Object.assign(new EventEmitter(), {
+                  method: 'POST',
+                  url: '/api/event',
+                  headers: { 'x-pixelpod-key': secret, host: '127.0.0.1:51999' }
+                })
+                const postRes = { writeHead: vi.fn(() => postRes), end: vi.fn() }
+                requestHandler(postReq, postRes)
+                postReq.emit(
+                  'data',
+                  JSON.stringify({ type: 'reply', id: cmd.id, ok: true, result: { echoed: cmd.action } })
+                )
+                postReq.emit('end')
+              }
+            }
+          },
+          end: vi.fn()
+        }
+        requestHandler(
+          {
+            method: 'GET',
+            url: `/api/stream?k=${secret}`,
+            headers: { host: '127.0.0.1:51999' },
+            on: sseReq.on.bind(sseReq)
+          },
+          sseRes
+        )
+
+        // 3. Emit SDK ready event from worker
+        const readyReq = Object.assign(new EventEmitter(), {
+          method: 'POST',
+          url: '/api/event',
+          headers: { 'x-pixelpod-key': secret, host: '127.0.0.1:51999' }
+        })
+        const readyRes = { writeHead: vi.fn(() => readyRes), end: vi.fn() }
+        requestHandler(readyReq, readyRes)
+        readyReq.emit('data', JSON.stringify({ type: 'ready', deviceId: 'oem-sdk-device-99' }))
+        readyReq.emit('end')
+      })
+
+      return proc
+    }
+
+    const host = createAudioHost({
+      userDataDir: tmpDir,
+      getAccessToken: async () => ({ accessToken: 'tok-abc' }),
+      onEvent: (ev) => events.push(ev),
+      findBrowser: () => ({ name: 'Microsoft Edge', executablePath: 'msedge.exe' }),
+      createServer,
+      spawnImpl
+    })
+
+    const started = await host.start()
+    expect(started).toEqual({
+      available: true,
+      browserName: 'Microsoft Edge',
+      deviceId: 'oem-sdk-device-99',
+      state: null
+    })
+    expect(spawnedArgs).toContain('--headless=new')
+    expect(spawnedArgs).toContain('--disable-features=HardwareMediaKeyHandling,MediaSessionService')
+    expect(events).toEqual([{ type: 'ready', deviceId: 'oem-sdk-device-99' }])
+
+    const reply = await host.command('pause')
+    expect(reply).toEqual({ echoed: 'pause' })
+
+    await expect(host.command('rm -rf')).rejects.toMatchObject({ code: 'INVALID_COMMAND' })
+
+    host.stop()
+    expect(childKilled).toBe(true)
   })
 })

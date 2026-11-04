@@ -119,7 +119,7 @@ export default function PlayerBar({
             type="button"
             className={`pp-icon-btn ${effectiveShuffleEnabled ? 'pp-icon-btn--active' : ''}`}
             onClick={handleToggleShuffle}
-            disabled={!isReady}
+            disabled={!isReady && !currentTrack}
             aria-label={effectiveShuffleEnabled ? 'Disable shuffle' : 'Enable shuffle'}
             title={effectiveShuffleEnabled ? 'Shuffle on (S)' : 'Shuffle off (S)'}
           >
@@ -130,7 +130,7 @@ export default function PlayerBar({
             type="button"
             className="pp-icon-btn"
             onClick={handleSkipBack}
-            disabled={!isReady}
+            disabled={!currentTrack && !isReady}
             aria-label="Previous track"
             title="Previous track"
           >
@@ -140,8 +140,8 @@ export default function PlayerBar({
           <button
             type="button"
             className="pp-play-fab"
-            onClick={togglePlayPause}
-            disabled={!isReady || !currentTrack}
+            onClick={() => togglePlayPause(currentTrack?.uri)}
+            disabled={!currentTrack}
             aria-label={isPlaying ? 'Pause' : 'Play'}
             title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
           >
@@ -160,7 +160,7 @@ export default function PlayerBar({
             type="button"
             className="pp-icon-btn"
             onClick={handleSkipForward}
-            disabled={!isReady}
+            disabled={!currentTrack && !isReady}
             aria-label="Next track"
             title="Next track"
           >

@@ -1,4 +1,4 @@
-import { PLAYER_COMMANDS } from '../shared/channels.js'
+import { PLAYER_COMMANDS, AUDIO_COMMANDS } from '../shared/channels.js'
 
 const MAX_TEXT = 512
 
@@ -24,6 +24,7 @@ export function sanitizePlayerState(raw) {
 }
 
 export const isPlayerCommand = (value) => PLAYER_COMMANDS.includes(value)
+export const isAudioCommand = (value) => AUDIO_COMMANDS.includes(value)
 
 /**
  * Wrap an ipcMain handler so it only runs for the trusted renderer frame.

@@ -78,20 +78,20 @@ export function createDesktopIntegration({
       { role: 'editMenu' },
       { label: 'View', submenu: [
         { label: 'Home', accelerator: 'CmdOrCtrl+1', click: () => navigate('home') },
-        { label: 'Search', accelerator: 'CmdOrCtrl+K', click: () => navigate('search') },
+        { label: 'Search', click: () => navigate('search') },
         { label: 'Your Library', accelerator: 'CmdOrCtrl+2', click: () => navigate('library') },
         { label: 'Now Playing', accelerator: 'CmdOrCtrl+3', click: () => navigate('nowPlaying') },
-        { label: 'Classic Mode', accelerator: 'CmdOrCtrl+Shift+C', click: () => navigate('classic') },
+        { label: 'Classic Mode', click: () => navigate('classic') },
         { type: 'separator' },
         ...(app.isPackaged ? [] : [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }]),
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
         { type: 'separator' }, { role: 'togglefullscreen' }
       ] },
       { label: 'Playback', submenu: [
-        // No accelerator for Space: it would steal the key from text inputs.
+        // In-window shortcuts (Space, Ctrl+Left/Right) are handled by App.jsx so they never double-fire.
         { label: 'Play / Pause', click: () => sendCommand('playPause') },
-        { label: 'Next Track', accelerator: 'CmdOrCtrl+Right', click: () => sendCommand('next') },
-        { label: 'Previous Track', accelerator: 'CmdOrCtrl+Left', click: () => sendCommand('previous') }
+        { label: 'Next Track', click: () => sendCommand('next') },
+        { label: 'Previous Track', click: () => sendCommand('previous') }
       ] },
       { role: 'windowMenu' }
     ]
